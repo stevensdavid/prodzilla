@@ -46,7 +46,7 @@ cargo run
 You can also use Docker, as Prodzilla is published to `ghcr.io/prodzilla/prodzilla`:
 
 ```
-docker run -v $(pwd)/prodzilla.yml:/prodzilla.yml ghcr.io/prodzilla/prodzilla:main
+docker run -v $(pwd)/prodzilla.yml:/prodzilla.yml ghcr.io/prodzilla/prodzilla:latest
 ```
 
 The application parses the [prodzilla.yml](/prodzilla.yml) file to generate a list of probes executed on a given schedule, and decide how to alert. Other configuration file paths can be selected using the `-f` flag. Execute `cargo run -- --help` or `prodzilla --help` to see a full list of configuration flags. 
