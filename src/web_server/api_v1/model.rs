@@ -96,11 +96,14 @@ impl From<ConfigStoreError> for ApiError {
                     "actual_version": actual,
                 })),
             },
-            ConfigStoreError::Database(err) => ApiError {
-                error: "internal_error".to_string(),
-                message: format!("Internal error: {err}"),
-                details: None,
-            },
+            ConfigStoreError::Database(err) => {
+                tracing::error!("Database error: {err}");
+                ApiError {
+                    error: "internal_error".to_string(),
+                    message: "An internal error occurred".to_string(),
+                    details: None,
+                }
+            }
         }
     }
 }

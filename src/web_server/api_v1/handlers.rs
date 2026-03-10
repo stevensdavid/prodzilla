@@ -5,7 +5,7 @@ use axum::{
     Extension, Json,
 };
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::app_state::AppState;
 use crate::monitor::manager::ConfigChangeEvent;
@@ -47,9 +47,13 @@ pub async fn create_monitor(
 
     let name = monitor.name.clone();
     let stored = state.config_store.create_monitor(&monitor).await?;
-    let _ = state
+    if state
         .change_tx
-        .send(ConfigChangeEvent::MonitorCreated(name.clone()));
+        .send(ConfigChangeEvent::MonitorCreated(name.clone()))
+        .is_err()
+    {
+        warn!("No receivers for config change event (monitor created: {name})");
+    }
 
     let location = format!("/api/v1/monitors/{name}");
     let response = MonitorApiResponse::from(stored);
@@ -83,9 +87,13 @@ pub async fn update_monitor(
         .config_store
         .update_monitor(&name, &req.monitor, req.version)
         .await?;
-    let _ = state
+    if state
         .change_tx
-        .send(ConfigChangeEvent::MonitorUpdated(name));
+        .send(ConfigChangeEvent::MonitorUpdated(name.clone()))
+        .is_err()
+    {
+        warn!("No receivers for config change event (monitor updated: {name})");
+    }
 
     let version = stored.version.to_string();
     let response = MonitorApiResponse::from(stored);
@@ -100,9 +108,13 @@ pub async fn delete_monitor(
     debug!("API: delete monitor {}", name);
 
     state.config_store.delete_monitor(&name).await?;
-    let _ = state
+    if state
         .change_tx
-        .send(ConfigChangeEvent::MonitorDeleted(name));
+        .send(ConfigChangeEvent::MonitorDeleted(name.clone()))
+        .is_err()
+    {
+        warn!("No receivers for config change event (monitor deleted: {name})");
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
