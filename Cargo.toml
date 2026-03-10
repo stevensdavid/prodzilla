@@ -39,6 +39,9 @@ async-trait = "0.1"
 thiserror = "2"
 tokio-util = { version = "0.7", features = ["rt"] }
 
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+
 [features]
 default = []
 postgres = ["sqlx/postgres"]
