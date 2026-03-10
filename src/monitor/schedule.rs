@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::monitor::model::Monitor;
@@ -11,13 +12,18 @@ pub fn schedule_monitors(monitors: &[Monitor], app_state: Arc<AppState>) {
     for monitor in monitors {
         let monitor_clone = monitor.clone();
         let task_state = app_state.clone();
+        let cancel_token = CancellationToken::new();
         tokio::spawn(async move {
-            monitoring_loop(&monitor_clone, task_state).await;
+            monitoring_loop(&monitor_clone, task_state, cancel_token).await;
         });
     }
 }
 
-pub async fn monitoring_loop<T: Monitorable>(monitorable: &T, app_state: Arc<AppState>) {
+pub async fn monitoring_loop<T: Monitorable>(
+    monitorable: &T,
+    app_state: Arc<AppState>,
+    cancel_token: CancellationToken,
+) {
     info!("Started monitoring {}", monitorable.get_name());
 
     let schedule = monitorable.get_schedule();
@@ -27,13 +33,22 @@ pub async fn monitoring_loop<T: Monitorable>(monitorable: &T, app_state: Arc<App
 
     loop {
         let now = Instant::now();
-        if now < next_run_time {
-            tokio::time::sleep(next_run_time - now).await;
+        let sleep_duration = if now < next_run_time {
+            next_run_time - now
+        } else {
+            std::time::Duration::ZERO
+        };
+
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                info!("Monitor {} cancelled, stopping", monitorable.get_name());
+                break;
+            }
+            _ = tokio::time::sleep(sleep_duration) => {
+                next_run_time = Instant::now() + std::time::Duration::from_secs(schedule.interval as u64);
+                monitorable.probe_and_store_result(app_state.clone()).await;
+            }
         }
-
-        next_run_time += std::time::Duration::from_secs(schedule.interval as u64);
-
-        monitorable.probe_and_store_result(app_state.clone()).await;
     }
 }
 

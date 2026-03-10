@@ -67,15 +67,23 @@ pub async fn monitor_trigger(
 ) -> Json<serde_json::Value> {
     debug!("Monitor trigger called for: {}", name);
 
-    // Find the monitor in the config
-    for monitor in &state.config.monitors {
-        if monitor.name == name {
-            monitor.probe_and_store_result(state.clone()).await;
+    // Try config store first, fall back to static config
+    let monitor = match state.config_store.get_monitor(&name).await {
+        Ok(stored) => Some(stored.monitor),
+        Err(_) => state
+            .config
+            .monitors
+            .iter()
+            .find(|m| m.name == name)
+            .cloned(),
+    };
 
-            let lock = state.monitor_results.read().unwrap();
-            if let Some(results) = lock.get(&name) {
-                return Json(serde_json::to_value(results.last().unwrap().clone()).unwrap());
-            }
+    if let Some(monitor) = monitor {
+        monitor.probe_and_store_result(state.clone()).await;
+
+        let lock = state.monitor_results.read().unwrap();
+        if let Some(results) = lock.get(&name) {
+            return Json(serde_json::to_value(results.last().unwrap().clone()).unwrap());
         }
     }
 
