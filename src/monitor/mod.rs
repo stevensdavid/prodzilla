@@ -1,5 +1,6 @@
 pub(crate) mod expectations;
 pub(crate) mod http;
+pub(crate) mod manager;
 pub(crate) mod model;
 pub(crate) mod monitor_logic;
 pub(crate) mod schedule;
