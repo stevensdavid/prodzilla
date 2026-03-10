@@ -1,24 +1,22 @@
 mod api_v1;
-mod model;
-mod monitors;
-mod prometheus_metrics;
 
-use crate::web_server::monitors::{get_monitor_results, monitor_trigger, monitors};
-use axum::{routing::get, Extension, Router};
+use axum::{Extension, Router};
 use std::{env, sync::Arc};
-use tracing::{debug, info};
+use tower_http::services::{ServeDir, ServeFile};
+use tracing::info;
 
 use crate::app_state::AppState;
 
+mod prometheus_metrics;
+
 pub async fn start_axum_server(app_state: Arc<AppState>) {
+    let spa_fallback = ServeDir::new("frontend/dist")
+        .fallback(ServeFile::new("frontend/dist/index.html"));
+
     let app = Router::new()
-        .route("/", get(root))
-        // New unified monitor routes
-        .route("/monitors", get(monitors))
-        .route("/monitors/:name/results", get(get_monitor_results))
-        .route("/monitors/:name/trigger", get(monitor_trigger))
         .nest("/api/v1", api_v1::router())
-        .layer(Extension(app_state.clone()));
+        .layer(Extension(app_state.clone()))
+        .fallback_service(spa_fallback);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 
@@ -37,7 +35,7 @@ pub async fn start_prometheus_server(registry: Arc<prometheus::Registry>) {
         Err(_) => "9464".to_owned(),
     };
     let app = Router::new()
-        .route("/metrics", get(prometheus_metrics::metrics_handler))
+        .route("/metrics", axum::routing::get(prometheus_metrics::metrics_handler))
         .layer(Extension(registry));
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
@@ -50,9 +48,4 @@ pub async fn start_prometheus_server(registry: Arc<prometheus::Registry>) {
     );
 
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn root() -> &'static str {
-    debug!("Application root called");
-    "Roar!"
 }

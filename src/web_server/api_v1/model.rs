@@ -41,6 +41,20 @@ pub struct UpdateMonitorRequest {
     pub version: i64,
 }
 
+#[derive(Deserialize)]
+pub struct MonitorQueryParams {
+    pub show_response: Option<bool>,
+}
+
+// --- Summary types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorSummary {
+    pub name: String,
+    pub status: String,
+    pub last_probed: DateTime<Utc>,
+}
+
 // --- Error type ---
 
 #[derive(Debug, Serialize)]

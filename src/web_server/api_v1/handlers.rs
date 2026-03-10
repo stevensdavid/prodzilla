@@ -1,5 +1,5 @@
 use axum::{
-    extract::Path,
+    extract::{Path, Query},
     http::{header, StatusCode},
     response::IntoResponse,
     Extension, Json,
@@ -10,9 +10,11 @@ use tracing::{debug, warn};
 use crate::app_state::AppState;
 use crate::monitor::manager::ConfigChangeEvent;
 use crate::monitor::model::Monitor;
+use crate::monitor::monitor_logic::Monitorable;
 
 use super::model::{
-    ApiError, MonitorApiResponse, MonitorListResponse, UpdateMonitorRequest, ValidatedJson,
+    ApiError, MonitorApiResponse, MonitorListResponse, MonitorQueryParams, MonitorSummary,
+    UpdateMonitorRequest, ValidatedJson,
 };
 
 pub async fn list_monitors(
@@ -117,6 +119,98 @@ pub async fn delete_monitor(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Get a summary list of all monitors with their status
+pub async fn monitor_summary(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Json<Vec<MonitorSummary>> {
+    debug!("API: monitor summary");
+
+    let mut summaries: Vec<MonitorSummary> = vec![];
+
+    let monitor_lock = state.monitor_results.read().unwrap();
+    for (key, value) in monitor_lock.iter() {
+        if let Some(last) = value.last() {
+            let status = if last.success { "OK" } else { "FAILING" };
+            summaries.push(MonitorSummary {
+                name: key.clone(),
+                status: status.to_owned(),
+                last_probed: last.timestamp_started,
+            });
+        }
+    }
+
+    Json(summaries)
+}
+
+/// Get results for a specific monitor
+pub async fn get_monitor_results(
+    Path(name): Path<String>,
+    Query(params): Query<MonitorQueryParams>,
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    debug!("API: get monitor results for {}", name);
+
+    let show_response = params.show_response.unwrap_or(false);
+
+    let monitor_lock = state.monitor_results.read().unwrap();
+    if let Some(results) = monitor_lock.get(&name) {
+        let mut cloned_results = results.clone();
+        cloned_results.reverse();
+
+        if !show_response {
+            for result in &mut cloned_results {
+                for step_result in &mut result.step_results {
+                    step_result.response = None;
+                }
+            }
+        }
+
+        return Ok(Json(serde_json::to_value(cloned_results).unwrap()));
+    }
+
+    Err(ApiError {
+        error: "not_found".to_string(),
+        message: format!("Monitor not found: {name}"),
+        details: None,
+    })
+}
+
+/// Trigger a specific monitor to run immediately
+pub async fn trigger_monitor(
+    Path(name): Path<String>,
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    debug!("API: trigger monitor {}", name);
+
+    // Try config store first, fall back to static config
+    let monitor = match state.config_store.get_monitor(&name).await {
+        Ok(stored) => Some(stored.monitor),
+        Err(_) => state
+            .config
+            .monitors
+            .iter()
+            .find(|m| m.name == name)
+            .cloned(),
+    };
+
+    if let Some(monitor) = monitor {
+        monitor.probe_and_store_result(state.clone()).await;
+
+        let lock = state.monitor_results.read().unwrap();
+        if let Some(results) = lock.get(&name) {
+            return Ok(Json(
+                serde_json::to_value(results.last().unwrap().clone()).unwrap(),
+            ));
+        }
+    }
+
+    Err(ApiError {
+        error: "not_found".to_string(),
+        message: format!("Monitor not found: {name}"),
+        details: None,
+    })
 }
 
 #[cfg(test)]
