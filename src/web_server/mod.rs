@@ -1,3 +1,4 @@
+mod api_v1;
 mod model;
 mod monitors;
 mod prometheus_metrics;
@@ -16,6 +17,7 @@ pub async fn start_axum_server(app_state: Arc<AppState>) {
         .route("/monitors", get(monitors))
         .route("/monitors/:name/results", get(get_monitor_results))
         .route("/monitors/:name/trigger", get(monitor_trigger))
+        .nest("/api/v1", api_v1::router())
         .layer(Extension(app_state.clone()));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
