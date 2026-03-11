@@ -491,36 +491,42 @@ pub struct Monitor {
     pub url: Option<String>,
     pub http_method: Option<String>,
     pub steps: Option<Vec<Step>>,
-    // NEW
-    pub script: Option<String>,          // File path (in YAML), loaded content (at runtime)
-    pub script_timeout_seconds: Option<u64>,  // Default: 60
+    // NEW — see Section 7.1 for dual representation details
+    pub script: Option<String>,              // Rhai source code (DB/API)
+    pub script_path: Option<String>,         // File path (YAML only, resolved at load time)
+    pub script_timeout_seconds: Option<u64>, // Default: 60
     // ...existing fields...
 }
 ```
 
-Update the custom `Deserialize` to enforce three-way mutual exclusivity.
+Update the custom `Deserialize` to enforce mutual exclusivity:
+- Exactly one of: (`url` + `http_method`), `steps`, `script`, or `script_path`
+- `script` and `script_path` cannot both be present
 
 ### 4.5 Config Loading Changes
 
 ```rust
-// In config.rs load_config(), after YAML parse:
-fn load_script_files(config: &mut Config, config_dir: &Path) -> Result<()> {
+// Called after YAML parse, BEFORE seeding into database.
+// Converts script_path → script content so the DB stores source code.
+fn resolve_script_paths(config: &mut Config, config_dir: &Path) -> Result<()> {
     for monitor in &mut config.monitors {
-        if let Some(script_path) = &monitor.script {
-            let full_path = config_dir.join(script_path);
+        if let Some(script_path) = monitor.script_path.take() {
+            let full_path = config_dir.join(&script_path);
             let content = std::fs::read_to_string(&full_path)
                 .map_err(|e| format!("Failed to load script {}: {}", full_path.display(), e))?;
 
             // Validate the script compiles
-            ScriptRunner::new(&content)?;
+            ScriptRunner::validate(&content)?;
 
-            // Store the loaded content (overwrite the path)
+            // Store content in script field; script_path is now None
             monitor.script = Some(content);
         }
     }
     Ok(())
 }
 ```
+
+See Section 7.2 for the full startup sequence with database seeding.
 
 ### 4.6 Monitor Logic Integration
 
@@ -666,15 +672,219 @@ step("verify-order", || {
 
 ---
 
-## 7. Implementation Phases
+## 7. Integration with Database Config Store (v1.0)
+
+The v1.0 branch introduced a database-backed configuration system with a CRUD REST API, hot-reloading MonitorManager, and YAML seeding. This affects the scripting engine design in several important ways.
+
+### 7.1 Dual Representation: File Path vs Content
+
+The `script` field has two meanings depending on context:
+
+| Context | `script` field contains | Example |
+|---------|------------------------|---------|
+| YAML config file | Relative file path | `./monitors/checkout.rhai` |
+| Database (`config_json`) | Rhai source code | `let resp = http_get(...);` |
+| CRUD API request/response | Rhai source code | (same as DB) |
+
+**Resolution:** Add a separate `script_path` field for YAML, keep `script` for content.
+
+```rust
+pub struct Monitor {
+    // ...existing fields...
+
+    /// Rhai script source code. Used in database storage and API.
+    /// Mutually exclusive with url/http_method and steps.
+    #[serde(default)]
+    pub script: Option<String>,
+
+    /// Path to a .rhai script file (YAML config only).
+    /// Resolved relative to config file directory during seeding.
+    /// Loaded into `script` field before database insertion.
+    #[serde(default)]
+    pub script_path: Option<String>,
+
+    /// Max script execution time in seconds (default: 60).
+    #[serde(default)]
+    pub script_timeout_seconds: Option<u64>,
+}
+```
+
+**Validation rules expand to:**
+- Exactly one of: (`url` + `http_method`), `steps`, `script`, or `script_path`
+- `script` and `script_path` are mutually exclusive
+- `script_path` is only valid in YAML (the seeding process converts it to `script`)
+
+### 7.2 YAML Seeding Flow
+
+The existing `seed_from_yaml` in `src/config_store/seed.rs` inserts monitors into the database. For scripted monitors, the script file must be loaded before seeding:
+
+```rust
+// In config loading, BEFORE seeding into database:
+fn resolve_script_paths(config: &mut Config, config_dir: &Path) -> Result<()> {
+    for monitor in &mut config.monitors {
+        if let Some(script_path) = monitor.script_path.take() {
+            let full_path = config_dir.join(&script_path);
+            let content = std::fs::read_to_string(&full_path)
+                .map_err(|e| format!("Failed to load script {}: {}", full_path.display(), e))?;
+
+            // Validate script compiles
+            ScriptRunner::validate(&content)?;
+
+            // Convert path → content for database storage
+            monitor.script = Some(content);
+            // script_path is now None (we called .take())
+        }
+    }
+    Ok(())
+}
+
+// Startup sequence:
+// 1. load_config("prodzilla.yml")       → Config with script_path fields
+// 2. resolve_script_paths(&mut config)  → Convert paths to content
+// 3. seed_from_yaml(store, &config)     → Insert into DB (script content in config_json)
+// 4. MonitorManager::run()              → Reconcile from DB, start monitors
+```
+
+After seeding, the database contains the full script content. The original `.rhai` files are no longer referenced at runtime.
+
+### 7.3 CRUD API for Scripted Monitors
+
+Creating a scripted monitor via the API requires sending script content inline:
+
+```bash
+# Create a scripted monitor via API
+curl -X POST http://localhost:3000/api/v1/monitors \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "checkout-flow",
+    "script": "let resp = http_get(\"https://api.example.com/health\");\nassert_eq(resp.status, 200, \"Health check failed\");",
+    "schedule": { "initial_delay": 10, "interval": 120 },
+    "tags": { "team": "payments" }
+  }'
+
+# Update script content
+curl -X PUT http://localhost:3000/api/v1/monitors/checkout-flow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "monitor": {
+      "name": "checkout-flow",
+      "script": "// updated script\nlet resp = http_get(\"https://api.example.com/v2/health\");\nassert_eq(resp.status, 200, \"V2 Health check failed\");",
+      "schedule": { "initial_delay": 10, "interval": 120 }
+    },
+    "version": 1
+  }'
+```
+
+**API validation additions:**
+- When `script` field is present in a create/update request, validate the script compiles with `ScriptRunner::validate()` before storing
+- Return `400 Bad Request` with parse error details if script is invalid
+- This catches syntax errors at write time, not at first execution
+
+```rust
+// In create_monitor handler (or a shared validation layer):
+if let Some(script) = &monitor.script {
+    ScriptRunner::validate(script).map_err(|e| ApiError {
+        error: "script_error".to_string(),
+        message: format!("Script compilation failed: {}", e),
+        details: None,
+    })?;
+}
+```
+
+### 7.4 MonitorManager Hot-Reloading
+
+The existing MonitorManager reconciliation loop works for scripted monitors with **no changes to the manager itself**. Here's why:
+
+1. **Create via API** → `ConfigChangeEvent::MonitorCreated` → `reconcile_single()` → loads `Monitor` from DB (includes `script` content) → `start_monitor()` → `monitoring_loop()` → `probe_and_store_result()` branches on `script.is_some()`
+
+2. **Update via API** → `ConfigChangeEvent::MonitorUpdated` → version mismatch detected → `stop_monitor()` + `start_monitor()` with new script content
+
+3. **Delete via API** → `ConfigChangeEvent::MonitorDeleted` → `stop_monitor()` cancels the tokio task
+
+4. **Poll fallback** → fingerprint changes when any monitor version bumps → full reconcile picks up script changes
+
+The `start_monitor()` method passes `monitor.clone()` into the tokio task, which includes the `script` field. The script content flows through the existing pipeline without any manager changes.
+
+### 7.5 ConfigStore: No Schema Migration Needed
+
+Since the database stores monitors as serialized JSON (`config_json TEXT`), adding `script`, `script_path`, and `script_timeout_seconds` to the `Monitor` struct requires **zero schema changes**. Serde handles the new optional fields:
+
+- Existing monitors in DB: `script` field absent → deserializes as `None`
+- New scripted monitors: `script` field present → stored in JSON, round-trips correctly
+
+This is a major advantage of the JSON storage approach.
+
+### 7.6 ScriptRunner Caching (Optimization)
+
+Since script compilation (parsing + AST generation) has a cost, and the MonitorManager may restart monitors, consider caching compiled scripts:
+
+```rust
+/// Pre-compiled script cache, keyed by script content hash.
+/// Avoids re-compiling the same script on every monitor restart.
+struct ScriptCache {
+    cache: HashMap<u64, Arc<AST>>,  // hash(content) → compiled AST
+}
+```
+
+This is an optimization for Phase 2 — the MVP can compile on each execution since Rhai compilation is fast (sub-millisecond for typical scripts).
+
+### 7.7 Updated Architecture Diagram
+
+```
+                    ┌──────────────────┐
+                    │   YAML Config    │
+                    │  (script_path)   │
+                    └────────┬─────────┘
+                             │ resolve_script_paths()
+                             ▼
+                    ┌──────────────────┐
+                    │   Config with    │
+                    │ script content   │
+                    └────────┬─────────┘
+                             │ seed_from_yaml()
+                             ▼
+┌──────────────┐    ┌──────────────────┐    ┌──────────────┐
+│  CRUD API    │───▶│    Database      │◀───│   Polling    │
+│  (script     │    │  (config_json    │    │  (fingerprint│
+│   content)   │    │   with script)   │    │   check)     │
+└──────────────┘    └────────┬─────────┘    └──────────────┘
+                             │
+                    ┌────────┴─────────┐
+                    │  MonitorManager  │
+                    │  (reconcile)     │
+                    └────────┬─────────┘
+                             │ start_monitor()
+                             ▼
+              ┌──────────────────────────────┐
+              │  monitoring_loop (tokio task) │
+              │  ┌─────────────────────────┐ │
+              │  │ if script.is_some():    │ │
+              │  │   ScriptRunner::execute │ │
+              │  │ elif steps.is_some():   │ │
+              │  │   multi-step logic      │ │
+              │  │ else:                   │ │
+              │  │   single-step logic     │ │
+              │  └─────────────────────────┘ │
+              └──────────────────────────────┘
+```
+
+---
+
+## 8. Implementation Phases
 
 ### Phase 1: Core Engine (MVP)
-- Rhai integration with basic host functions: `http_get`, `http_post`, `http_request`
-- `parse_json`, `assert`, `assert_eq`, `step()`
-- `env()`, `uuid()`, `log_info/warn/debug`
-- Config loading with script file references
-- MonitorResult integration
-- Basic tests with wiremock
+- Add `rhai` dependency to Cargo.toml
+- `src/scripting/` module: `ScriptRunner`, `ScriptContext`, host function registration
+- Core host functions: `http_get`, `http_post`, `http_request`, `parse_json`, `assert`, `assert_eq`, `step()`
+- Utility functions: `env()`, `uuid()`, `log_info/warn/debug`
+- Model changes: `script`, `script_path`, `script_timeout_seconds` fields on `Monitor`
+- Deserialization: three-way mutual exclusivity validation
+- Config loading: `resolve_script_paths()` to load `.rhai` files into content
+- YAML seeding: script content flows into database via existing `seed_from_yaml`
+- `probe_and_store_result()` branching for scripted monitors
+- CRUD API: script compilation validation on create/update
+- MonitorResult integration (no manager changes needed)
+- Unit tests with wiremock
 
 ### Phase 2: Advanced Features
 - `retry()`, `poll()`, `sleep_ms()`
@@ -683,10 +893,11 @@ step("verify-order", || {
 - `hmac_sha256`, `sha256` (for API auth)
 - `json_path()` for complex extraction
 - `set_metadata()` for custom result data
+- ScriptRunner AST caching (avoid recompilation on monitor restart)
 
 ### Phase 3: Developer Experience
 - Script validation CLI command (`prodzilla validate monitors/`)
 - Better error reporting with context
 - Script API documentation generation from Rhai metadata
 - Example script library
-- Optional: hot-reload scripts on file change (watch mode)
+- Optional: hot-reload scripts on file change (watch mode for YAML + script files)
