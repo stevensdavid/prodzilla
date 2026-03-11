@@ -23,8 +23,5 @@ pub fn router() -> Router {
             "/monitors/:name/results",
             get(handlers::get_monitor_results),
         )
-        .route(
-            "/monitors/:name/trigger",
-            post(handlers::trigger_monitor),
-        )
+        .route("/monitors/:name/trigger", post(handlers::trigger_monitor))
 }
