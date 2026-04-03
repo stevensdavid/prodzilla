@@ -60,9 +60,9 @@ pub struct Step {
     pub sensitive: bool,
 }
 
-/// Monitor represents a unified configuration that can be either a single-step test
-/// or a multi-step test. It must have either `steps` OR the root-level fields (url, http_method),
-/// but not both.
+/// Monitor represents a unified configuration that can be either a single-step test,
+/// a multi-step test, or a scripted monitor. It must have exactly one of: `steps`,
+/// root-level fields (url, http_method), or script/script_path.
 #[derive(Debug, Clone, Serialize)]
 pub struct Monitor {
     pub name: String,
@@ -75,6 +75,10 @@ pub struct Monitor {
     pub sensitive: bool,
     // Fields for multi-step monitors
     pub steps: Option<Vec<Step>>,
+    // Fields for scripted monitors
+    pub script: Option<String>,
+    pub script_path: Option<String>,
+    pub script_timeout_seconds: Option<u64>,
     // Common fields
     pub schedule: ScheduleParameters,
     pub alerts: Option<Vec<Alert>>,
@@ -87,11 +91,19 @@ impl Monitor {
         self.steps.is_some()
     }
 
+    /// Returns true if this monitor uses inline Rhai script execution
+    pub fn is_scripted(&self) -> bool {
+        self.script.is_some()
+    }
+
     /// Returns the steps to execute. For single-step monitors,
     /// returns a synthetic step from the root-level fields.
+    /// Scripted monitors return an empty vec (they don't use Step-based execution).
     pub fn get_steps(&self) -> Vec<Step> {
         if let Some(steps) = &self.steps {
             steps.clone()
+        } else if self.is_scripted() {
+            vec![]
         } else {
             // Create synthetic step from single-step monitor fields
             vec![Step {
@@ -138,6 +150,9 @@ impl<'de> Deserialize<'de> for Monitor {
             #[serde(default)]
             sensitive: bool,
             steps: Option<Vec<Step>>,
+            script: Option<String>,
+            script_path: Option<String>,
+            script_timeout_seconds: Option<u64>,
             schedule: ScheduleParameters,
             alerts: Option<Vec<Alert>>,
             tags: Option<HashMap<String, String>>,
@@ -147,25 +162,30 @@ impl<'de> Deserialize<'de> for Monitor {
 
         let has_steps = helper.steps.is_some() && !helper.steps.as_ref().unwrap().is_empty();
         let has_monitor_fields = helper.url.is_some() || helper.http_method.is_some();
+        let has_script = helper.script.is_some() || helper.script_path.is_some();
 
-        // Validate mutual exclusivity
-        if has_steps && has_monitor_fields {
+        // script and script_path are mutually exclusive
+        if helper.script.is_some() && helper.script_path.is_some() {
             return Err(de::Error::custom(format!(
-                "Monitor '{}' cannot have both 'steps' and root-level fields (url, http_method). Use one or the other.",
+                "Monitor '{}' cannot have both 'script' and 'script_path'",
                 helper.name
             )));
         }
 
-        // Validate that at least one is present
-        if !has_steps && !has_monitor_fields {
+        // Exactly one monitor type must be specified
+        let type_count = [has_steps, has_monitor_fields, has_script]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+        if type_count != 1 {
             return Err(de::Error::custom(format!(
-                "Monitor '{}' must have either 'steps' or root-level fields (url, http_method)",
+                "Monitor '{}' must have exactly one of: steps, url+http_method, or script/script_path",
                 helper.name
             )));
         }
 
         // For single-step monitors, require url and http_method
-        if !has_steps {
+        if has_monitor_fields {
             if helper.url.is_none() {
                 return Err(de::Error::custom(format!(
                     "Monitor '{}' is missing required field 'url'",
@@ -196,6 +216,9 @@ impl<'de> Deserialize<'de> for Monitor {
             expectations: helper.expectations,
             sensitive: helper.sensitive,
             steps: helper.steps,
+            script: helper.script,
+            script_path: helper.script_path,
+            script_timeout_seconds: helper.script_timeout_seconds,
             schedule: helper.schedule,
             alerts: helper.alerts,
             tags: helper.tags,

@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 use crate::app_state::AppState;
 use crate::monitor::manager::ConfigChangeEvent;
 use crate::monitor::model::Monitor;
+use crate::scripting::ScriptRunner;
 
 use super::model::{
     ApiError, MonitorApiResponse, MonitorListResponse, UpdateMonitorRequest, ValidatedJson,
@@ -39,11 +40,31 @@ pub async fn get_monitor(
     Ok(([(header::ETAG, version)], Json(response)))
 }
 
+fn validate_script(monitor: &Monitor) -> Result<(), ApiError> {
+    if monitor.script_path.is_some() {
+        return Err(ApiError {
+            error: "validation_error".to_string(),
+            message: "script_path is only valid in YAML config files. Use 'script' with inline content.".to_string(),
+            details: None,
+        });
+    }
+    if let Some(script) = &monitor.script {
+        ScriptRunner::validate(script).map_err(|e| ApiError {
+            error: "validation_error".to_string(),
+            message: format!("Script compilation failed: {}", e),
+            details: None,
+        })?;
+    }
+    Ok(())
+}
+
 pub async fn create_monitor(
     Extension(state): Extension<Arc<AppState>>,
     ValidatedJson(monitor): ValidatedJson<Monitor>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!("API: create monitor {}", monitor.name);
+
+    validate_script(&monitor)?;
 
     let name = monitor.name.clone();
     let stored = state.config_store.create_monitor(&monitor).await?;
@@ -82,6 +103,8 @@ pub async fn update_monitor(
             details: None,
         });
     }
+
+    validate_script(&req.monitor)?;
 
     let stored = state
         .config_store
@@ -146,6 +169,9 @@ mod tests {
             },
             alerts: None,
             tags: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         }
     }
 

@@ -32,6 +32,10 @@ lazy_static! {
         .unwrap();
 }
 
+pub fn get_client() -> &'static reqwest::Client {
+    &CLIENT
+}
+
 pub async fn call_endpoint(
     http_method: &str,
     url: &String,

@@ -1,9 +1,10 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, path::{Path, PathBuf}};
 
 use serde::{de, Deserialize, Deserializer, Serialize};
 use tracing::warn;
 
 use crate::monitor::model::Monitor;
+use crate::scripting::ScriptRunner;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Config {
@@ -56,6 +57,22 @@ pub async fn load_config<P: Into<PathBuf>>(path: P) -> Result<Config, Box<dyn st
     let config = replace_env_vars(&config);
     let config: Config = serde_yaml::from_str(&config)?;
     Ok(config)
+}
+
+pub fn resolve_script_paths(
+    config: &mut Config,
+    config_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for monitor in &mut config.monitors {
+        if let Some(script_path) = monitor.script_path.take() {
+            let full_path = config_dir.join(&script_path);
+            let content = std::fs::read_to_string(&full_path)
+                .map_err(|e| format!("Failed to load script {}: {}", full_path.display(), e))?;
+            ScriptRunner::validate(&content)?;
+            monitor.script = Some(content);
+        }
+    }
+    Ok(())
 }
 
 pub fn replace_env_vars(content: &str) -> String {

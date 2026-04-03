@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::Utc;
 use opentelemetry::global;
@@ -20,9 +22,12 @@ use crate::monitor::variables::substitute_variables;
 use crate::monitor::variables::ExecutionContext;
 use crate::monitor::variables::StepVariables;
 use crate::otel::metrics::MonitorStatus;
+use crate::scripting::types::ScriptContext;
+use crate::scripting::ScriptRunner;
 
 use super::expectations::validate_response;
 use super::http::call_endpoint;
+use super::http::get_client;
 use super::model::Monitor;
 use super::model::MonitorResult;
 use super::model::ScheduleParameters;
@@ -54,6 +59,67 @@ impl Monitorable for Monitor {
         .collect::<Vec<_>>();
 
         app_state.metrics.runs.add(1, &monitor_attributes);
+
+        // Scripted monitor execution path
+        if let Some(script_content) = &self.script {
+            let ctx = ScriptContext {
+                http_client: get_client().clone(),
+                step_results: Mutex::new(Vec::new()),
+                assertion_failures: Mutex::new(Vec::new()),
+                metadata: Mutex::new(HashMap::new()),
+                monitor_name: self.name.clone(),
+                timeout: Duration::from_secs(self.script_timeout_seconds.unwrap_or(60)),
+            };
+
+            // Script was validated at load time, so unwrap is safe here
+            let runner = ScriptRunner::new(script_content).unwrap();
+            let monitor_result = runner.execute(ctx).await;
+
+            let success = monitor_result.success;
+            app_state.metrics.duration.record(
+                monitor_result
+                    .step_results
+                    .iter()
+                    .map(|s| {
+                        Utc::now()
+                            .signed_duration_since(s.timestamp_started)
+                            .num_milliseconds() as u64
+                    })
+                    .sum::<u64>(),
+                &monitor_attributes,
+            );
+            app_state.metrics.status.record(
+                if success {
+                    MonitorStatus::Ok.as_u64()
+                } else {
+                    MonitorStatus::Error.as_u64()
+                },
+                &monitor_attributes,
+            );
+            if success {
+                app_state.metrics.errors.add(0, &monitor_attributes);
+            } else {
+                app_state.metrics.errors.add(1, &monitor_attributes);
+                let last_step = monitor_result.step_results.last();
+                let _ = alert_if_failure(
+                    success,
+                    last_step.and_then(|s| s.error_message.as_deref()),
+                    last_step.and_then(|s| s.response.as_ref()),
+                    &self.name,
+                    monitor_result.timestamp_started,
+                    &self.alerts,
+                    &last_step.and_then(|s| s.trace_id.clone()),
+                )
+                .await;
+            }
+
+            info!(
+                "Finished scripted monitor {}, success: {}",
+                &self.name, success
+            );
+            app_state.add_monitor_result(self.name.clone(), monitor_result);
+            return;
+        }
 
         let mut execution_context = ExecutionContext::new();
         let mut step_results: Vec<StepResult> = vec![];
@@ -316,6 +382,9 @@ mod monitor_logic_tests {
             },
             tags: None,
             alerts: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         };
 
         monitor.probe_and_store_result(app_state.clone()).await;
@@ -388,6 +457,9 @@ mod monitor_logic_tests {
                 url: format!("{}{}", mock_server.uri(), alert_path.to_owned()),
             }]),
             tags: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         };
 
         monitor.probe_and_store_result(app_state.clone()).await;
@@ -474,6 +546,9 @@ mod monitor_logic_tests {
             },
             alerts: None,
             tags: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         };
 
         monitor.probe_and_store_result(app_state.clone()).await;
