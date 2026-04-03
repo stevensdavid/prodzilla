@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::app_state::AppState;
+use crate::config_store::ConfigStoreError;
 use crate::monitor::manager::ConfigChangeEvent;
 use crate::monitor::model::Monitor;
 use crate::monitor::monitor_logic::Monitorable;
@@ -187,12 +188,13 @@ pub async fn trigger_monitor(
     // Try config store first, fall back to static config
     let monitor = match state.config_store.get_monitor(&name).await {
         Ok(stored) => Some(stored.monitor),
-        Err(_) => state
+        Err(ConfigStoreError::NotFound(_)) => state
             .config
             .monitors
             .iter()
             .find(|m| m.name == name)
             .cloned(),
+        Err(e) => return Err(ApiError::from(e)),
     };
 
     if let Some(monitor) = monitor {
@@ -219,7 +221,7 @@ mod tests {
     use crate::app_state::AppState;
     use crate::config::Config;
     use crate::config_store::sqlite::SqliteConfigStore;
-    use crate::monitor::model::{Monitor, ScheduleParameters};
+    use crate::monitor::model::{Monitor, MonitorResult, ScheduleParameters};
     use axum::body::Body;
     use axum::http::{self, Request, Response};
     use tokio::sync::broadcast;
@@ -243,15 +245,19 @@ mod tests {
         }
     }
 
-    async fn setup() -> (axum::Router, broadcast::Receiver<ConfigChangeEvent>) {
+    async fn setup() -> (
+        axum::Router,
+        broadcast::Receiver<ConfigChangeEvent>,
+        Arc<AppState>,
+    ) {
         let store = Arc::new(SqliteConfigStore::new_in_memory().await.unwrap());
         let config = Config { monitors: vec![] };
         let (change_tx, change_rx) = broadcast::channel(16);
         let app_state = Arc::new(AppState::with_store(config, store, change_tx));
 
-        let app = crate::web_server::api_v1::router().layer(Extension(app_state));
+        let app = crate::web_server::api_v1::router().layer(Extension(app_state.clone()));
 
-        (app, change_rx)
+        (app, change_rx, app_state)
     }
 
     async fn send(app: axum::Router, req: Request<Body>) -> Response<Body> {
@@ -266,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_monitors_empty() {
-        let (app, _rx) = setup().await;
+        let (app, _rx, _state) = setup().await;
 
         let resp = send(
             app,
@@ -284,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_monitor() {
-        let (app, mut rx) = setup().await;
+        let (app, mut rx, _state) = setup().await;
 
         let monitor = test_monitor("test-mon");
         let json_body = serde_json::to_string(&monitor).unwrap();
@@ -331,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_duplicate_returns_409() {
-        let (app, _rx) = setup().await;
+        let (app, _rx, _state) = setup().await;
 
         let monitor = test_monitor("dup-mon");
         let json_body = serde_json::to_string(&monitor).unwrap();
@@ -365,7 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_monitor() {
-        let (app, mut rx) = setup().await;
+        let (app, mut rx, _state) = setup().await;
 
         let monitor = test_monitor("upd-mon");
         let json_body = serde_json::to_string(&monitor).unwrap();
@@ -416,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_version_conflict() {
-        let (app, _rx) = setup().await;
+        let (app, _rx, _state) = setup().await;
 
         let monitor = test_monitor("conflict-mon");
         let json_body = serde_json::to_string(&monitor).unwrap();
@@ -455,7 +461,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_name_mismatch() {
-        let (app, _rx) = setup().await;
+        let (app, _rx, _state) = setup().await;
 
         let monitor = test_monitor("orig-mon");
         let json_body = serde_json::to_string(&monitor).unwrap();
@@ -494,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_monitor() {
-        let (app, mut rx) = setup().await;
+        let (app, mut rx, _state) = setup().await;
 
         let monitor = test_monitor("del-mon");
         let json_body = serde_json::to_string(&monitor).unwrap();
@@ -543,7 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nonexistent_returns_404() {
-        let (app, _rx) = setup().await;
+        let (app, _rx, _state) = setup().await;
 
         let resp = send(
             app,
@@ -559,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_json_returns_400() {
-        let (app, _rx) = setup().await;
+        let (app, _rx, _state) = setup().await;
 
         let resp = send(
             app,
@@ -573,5 +579,111 @@ mod tests {
         .await;
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_monitor_summary_empty() {
+        let (app, _rx, _state) = setup().await;
+
+        let resp = send(
+            app,
+            Request::builder()
+                .uri("/monitors/summary")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let summaries: Vec<MonitorSummary> = response_json(resp).await;
+        assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_monitor_summary_with_results() {
+        let (app, _rx, state) = setup().await;
+
+        let result = MonitorResult {
+            monitor_name: "test-mon".to_string(),
+            timestamp_started: chrono::Utc::now(),
+            success: true,
+            step_results: vec![],
+        };
+        state.add_monitor_result("test-mon".to_string(), result);
+
+        let resp = send(
+            app,
+            Request::builder()
+                .uri("/monitors/summary")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let summaries: Vec<MonitorSummary> = response_json(resp).await;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "test-mon");
+        assert_eq!(summaries[0].status, "OK");
+    }
+
+    #[tokio::test]
+    async fn test_get_monitor_results_not_found() {
+        let (app, _rx, _state) = setup().await;
+
+        let resp = send(
+            app,
+            Request::builder()
+                .uri("/monitors/nonexistent/results")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_monitor_results_with_data() {
+        let (app, _rx, state) = setup().await;
+
+        let result = MonitorResult {
+            monitor_name: "test-mon".to_string(),
+            timestamp_started: chrono::Utc::now(),
+            success: true,
+            step_results: vec![],
+        };
+        state.add_monitor_result("test-mon".to_string(), result);
+
+        let resp = send(
+            app,
+            Request::builder()
+                .uri("/monitors/test-mon/results")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let results: Vec<MonitorResult> = response_json(resp).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+    }
+
+    #[tokio::test]
+    async fn test_trigger_monitor_not_found() {
+        let (app, _rx, _state) = setup().await;
+
+        let resp = send(
+            app,
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/monitors/nonexistent/trigger")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

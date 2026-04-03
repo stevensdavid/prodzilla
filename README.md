@@ -211,7 +211,9 @@ OpsGenie, and PagerDuty notification integrations are planned.
 
 ## Prodzilla Server Endpoints
 
-Prodzilla exposes a web server which you can use to retrieve details about monitors or trigger them. When running locally, these will exist at `localhost:3000`, e.g. `localhost:3000/monitors`.
+Prodzilla exposes a web server which you can use to retrieve details about monitors or trigger them. When running locally, these will exist at `localhost:3000`, e.g. `localhost:3000/api/v1/monitors/summary`.
+
+> **Note:** As of the web frontend addition, all API endpoints moved under `/api/v1/`. The old paths (`/monitors/...`) now serve the web UI.
 
 ### Get Monitors
 
@@ -219,7 +221,7 @@ This endpoint outputs all running monitors and their current status.
 
 Path:
 
-- /monitors
+- /api/v1/monitors/summary
 
 Example Response:
 
@@ -240,7 +242,7 @@ This endpoint outputs all of the results for a specific monitor.
 
 Path:
 
-- /monitors/{name}/results
+- /api/v1/monitors/{name}/results
 
 Query Parameters:
 
@@ -281,7 +283,7 @@ This endpoint triggers a monitor immediately, stores the result alongside the sc
 
 Path:
 
-- /monitors/{name}/trigger
+- POST /api/v1/monitors/{name}/trigger
 
 Example Response for multi-step monitor:
 
