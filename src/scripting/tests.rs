@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -12,8 +11,6 @@ fn make_ctx() -> ScriptContext {
     ScriptContext {
         http_client: reqwest::Client::new(),
         step_results: Mutex::new(vec![]),
-        assertion_failures: Mutex::new(vec![]),
-        metadata: Mutex::new(HashMap::new()),
         monitor_name: "test".to_string(),
         timeout: Duration::from_secs(10),
     }
@@ -23,8 +20,6 @@ fn make_ctx_with_timeout(timeout: Duration) -> ScriptContext {
     ScriptContext {
         http_client: reqwest::Client::new(),
         step_results: Mutex::new(vec![]),
-        assertion_failures: Mutex::new(vec![]),
-        metadata: Mutex::new(HashMap::new()),
         monitor_name: "test".to_string(),
         timeout,
     }
@@ -193,4 +188,52 @@ async fn test_script_timeout() {
     let result = runner.execute(ctx).await;
     // Script should fail due to resource limit or timeout
     assert!(!result.success, "Infinite loop should fail");
+}
+
+#[tokio::test]
+async fn test_step_assertion_failure_preserves_clean_error_message() {
+    // Regression: assertion failures inside step() closures should keep
+    // the clean message, not be overwritten with Rhai-wrapped noise like
+    // "Runtime error: health check failed (line 3, position 13)"
+    let script = r#"
+        step("check", || {
+            assert(false, "health check failed");
+        });
+    "#;
+    let runner = ScriptRunner::new(script).unwrap();
+    let result = runner.execute(make_ctx()).await;
+    assert!(!result.success);
+    assert_eq!(result.step_results.len(), 1);
+    let error = result.step_results[0].error_message.as_ref().unwrap();
+    assert!(
+        error.contains("health check failed"),
+        "Error should contain the assertion message, got: {}",
+        error
+    );
+    assert!(
+        !error.contains("position"),
+        "Error should not contain Rhai position noise, got: {}",
+        error
+    );
+}
+
+#[tokio::test]
+async fn test_step_failure_outside_step_sets_error_on_last_step() {
+    // When a script fails after a successful step(), the last step should
+    // get the error message since it didn't have one of its own
+    let script = r#"
+        step("setup", || {
+            let x = 1;
+        });
+        assert(false, "post-step failure");
+    "#;
+    let runner = ScriptRunner::new(script).unwrap();
+    let result = runner.execute(make_ctx()).await;
+    assert!(!result.success);
+    let last = result.step_results.last().unwrap();
+    assert!(!last.success);
+    assert!(
+        last.error_message.is_some(),
+        "Last step should have an error message"
+    );
 }

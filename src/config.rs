@@ -115,7 +115,7 @@ mod config_tests {
         let single_step_count = config
             .monitors
             .iter()
-            .filter(|m| !m.is_multi_step())
+            .filter(|m| !m.is_multi_step() && !m.is_scripted())
             .count();
         let multi_step_count = config.monitors.iter().filter(|m| m.is_multi_step()).count();
         assert_eq!(1, single_step_count, "Should have 1 single-step monitor");

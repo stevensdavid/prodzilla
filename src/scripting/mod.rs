@@ -99,6 +99,11 @@ impl ScriptRunner {
                     last.success = false;
                     last.error_message = error_message.clone();
                 }
+                // Only set error_message if not already set (e.g., from within a step closure)
+                // to avoid overwriting clean assertion messages with Rhai-wrapped versions
+                if last.error_message.is_none() {
+                    last.error_message = error_message.clone();
+                }
             }
         }
 

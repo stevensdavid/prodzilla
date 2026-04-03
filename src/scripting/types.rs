@@ -7,10 +7,6 @@ use crate::monitor::model::StepResult;
 pub struct ScriptContext {
     pub http_client: reqwest::Client,
     pub step_results: Mutex<Vec<StepResult>>,
-    #[allow(dead_code)] // reserved for future soft_assert support
-    pub assertion_failures: Mutex<Vec<String>>,
-    #[allow(dead_code)] // reserved for future script metadata/context passing
-    pub metadata: Mutex<HashMap<String, String>>,
     pub monitor_name: String,
     pub timeout: Duration,
 }

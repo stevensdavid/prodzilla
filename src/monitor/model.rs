@@ -77,6 +77,7 @@ pub struct Monitor {
     pub steps: Option<Vec<Step>>,
     // Fields for scripted monitors
     pub script: Option<String>,
+    #[serde(skip_serializing)]
     pub script_path: Option<String>,
     pub script_timeout_seconds: Option<u64>,
     // Common fields
@@ -293,5 +294,39 @@ impl EndpointResult {
             body: self.body.clone(),
             sensitive: self.sensitive,
         }
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    #[test]
+    fn test_script_path_not_serialized() {
+        // Regression: script_path is YAML-only and should not appear in API responses
+        let monitor = Monitor {
+            name: "test".to_string(),
+            url: Some("http://example.com".to_string()),
+            http_method: Some("GET".to_string()),
+            with: None,
+            expectations: None,
+            sensitive: false,
+            steps: None,
+            script: None,
+            script_path: Some("/path/to/script.rhai".to_string()),
+            script_timeout_seconds: None,
+            schedule: ScheduleParameters {
+                initial_delay: 0,
+                interval: 0,
+            },
+            alerts: None,
+            tags: None,
+        };
+        let json = serde_json::to_value(&monitor).unwrap();
+        assert!(
+            json.get("script_path").is_none(),
+            "script_path should not be serialized, but got: {}",
+            json
+        );
     }
 }
