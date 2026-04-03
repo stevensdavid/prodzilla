@@ -32,9 +32,7 @@ pub fn register(engine: &mut Engine, ctx: Arc<ScriptContext>) {
                 futures::executor::block_on(async move {
                     do_request(client, "GET", &url, None, HashMap::new()).await
                 })
-                .map_err(|e| {
-                    Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE))
-                })
+                .map_err(|e| Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE)))
             },
         );
     }
@@ -49,9 +47,7 @@ pub fn register(engine: &mut Engine, ctx: Arc<ScriptContext>) {
                 futures::executor::block_on(async move {
                     do_request(client, "POST", &url, Some(body), HashMap::new()).await
                 })
-                .map_err(|e| {
-                    Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE))
-                })
+                .map_err(|e| Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE)))
             },
         );
     }
@@ -66,9 +62,7 @@ pub fn register(engine: &mut Engine, ctx: Arc<ScriptContext>) {
                 futures::executor::block_on(async move {
                     do_request(client, "PUT", &url, Some(body), HashMap::new()).await
                 })
-                .map_err(|e| {
-                    Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE))
-                })
+                .map_err(|e| Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE)))
             },
         );
     }
@@ -83,9 +77,7 @@ pub fn register(engine: &mut Engine, ctx: Arc<ScriptContext>) {
                 futures::executor::block_on(async move {
                     do_request(client, "DELETE", &url, None, HashMap::new()).await
                 })
-                .map_err(|e| {
-                    Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE))
-                })
+                .map_err(|e| Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE)))
             },
         );
     }
@@ -120,9 +112,7 @@ pub fn register(engine: &mut Engine, ctx: Arc<ScriptContext>) {
                     .and_then(|v| v.clone().try_cast::<Map>())
                     .map(|map| {
                         map.into_iter()
-                            .filter_map(|(k, v)| {
-                                v.try_cast::<String>().map(|s| (k.to_string(), s))
-                            })
+                            .filter_map(|(k, v)| v.try_cast::<String>().map(|s| (k.to_string(), s)))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -131,9 +121,7 @@ pub fn register(engine: &mut Engine, ctx: Arc<ScriptContext>) {
                 futures::executor::block_on(async move {
                     do_request(client, &method, &url, body, headers).await
                 })
-                .map_err(|e| {
-                    Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE))
-                })
+                .map_err(|e| Box::new(EvalAltResult::ErrorRuntime(e.into(), Position::NONE)))
             },
         );
     }
@@ -148,8 +136,8 @@ async fn do_request(
 ) -> Result<ScriptResponse, String> {
     use std::str::FromStr;
 
-    let method = reqwest::Method::from_str(method)
-        .map_err(|e| format!("Invalid HTTP method: {}", e))?;
+    let method =
+        reqwest::Method::from_str(method).map_err(|e| format!("Invalid HTTP method: {}", e))?;
 
     let mut builder = client
         .request(method, url)

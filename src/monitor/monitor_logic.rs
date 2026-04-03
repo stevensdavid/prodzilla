@@ -87,10 +87,10 @@ impl Monitorable for Monitor {
                         }],
                     };
                     app_state.metrics.errors.add(1, &monitor_attributes);
-                    app_state.metrics.status.record(
-                        MonitorStatus::Error.as_u64(),
-                        &monitor_attributes,
-                    );
+                    app_state
+                        .metrics
+                        .status
+                        .record(MonitorStatus::Error.as_u64(), &monitor_attributes);
                     error!(
                         "Script compilation failed for monitor {}: {}",
                         &self.name, e
@@ -102,10 +102,10 @@ impl Monitorable for Monitor {
             let monitor_result = runner.execute(ctx).await;
 
             let success = monitor_result.success;
-            app_state
-                .metrics
-                .duration
-                .record(time_since(&monitor_result.timestamp_started), &monitor_attributes);
+            app_state.metrics.duration.record(
+                time_since(&monitor_result.timestamp_started),
+                &monitor_attributes,
+            );
             app_state.metrics.status.record(
                 if success {
                     MonitorStatus::Ok.as_u64()

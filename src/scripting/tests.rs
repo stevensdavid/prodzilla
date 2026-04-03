@@ -4,8 +4,8 @@ use std::time::Duration;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::scripting::{engine, ScriptRunner};
 use crate::scripting::types::{ScriptContext, ScriptError};
+use crate::scripting::{engine, ScriptRunner};
 
 fn make_ctx() -> ScriptContext {
     ScriptContext {
@@ -82,7 +82,11 @@ async fn test_http_get() {
 
     let runner = ScriptRunner::new(&script).unwrap();
     let result = runner.execute(make_ctx()).await;
-    assert!(result.success, "Script should succeed, got: {:?}", result.step_results);
+    assert!(
+        result.success,
+        "Script should succeed, got: {:?}",
+        result.step_results
+    );
 }
 
 #[tokio::test]
@@ -140,7 +144,11 @@ async fn test_step_records_result() {
     "#;
     let runner = ScriptRunner::new(script).unwrap();
     let result = runner.execute(make_ctx()).await;
-    assert!(result.success, "Script should succeed: {:?}", result.step_results);
+    assert!(
+        result.success,
+        "Script should succeed: {:?}",
+        result.step_results
+    );
     // Should have exactly one step result named "my-step"
     assert_eq!(result.step_results.len(), 1, "Should have 1 step result");
     assert_eq!(result.step_results[0].step_name, "my-step");
@@ -153,9 +161,7 @@ async fn test_full_execution() {
 
     Mock::given(method("GET"))
         .and(path("/api/status"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(r#"{"status": "ok"}"#),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status": "ok"}"#))
         .mount(&mock_server)
         .await;
 
@@ -173,7 +179,11 @@ async fn test_full_execution() {
 
     let runner = ScriptRunner::new(&script).unwrap();
     let result = runner.execute(make_ctx()).await;
-    assert!(result.success, "Full execution should succeed: {:?}", result.step_results);
+    assert!(
+        result.success,
+        "Full execution should succeed: {:?}",
+        result.step_results
+    );
     assert_eq!(result.step_results.len(), 1);
     assert_eq!(result.step_results[0].step_name, "check-api");
     assert!(result.step_results[0].success);

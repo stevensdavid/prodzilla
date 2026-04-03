@@ -5,9 +5,7 @@ pub fn register(engine: &mut Engine) {
         std::env::var(&name).unwrap_or_default()
     });
 
-    engine.register_fn("uuid", || -> String {
-        uuid::Uuid::new_v4().to_string()
-    });
+    engine.register_fn("uuid", || -> String { uuid::Uuid::new_v4().to_string() });
 
     engine.register_fn("timestamp", || -> String {
         chrono::Utc::now().to_rfc3339()

@@ -68,10 +68,7 @@ impl ScriptRunner {
                 false,
                 Some(format!("Script execution panicked: {}", join_err)),
             ),
-            Err(_) => (
-                false,
-                Some(format!("Script timed out after {:?}", timeout)),
-            ),
+            Err(_) => (false, Some(format!("Script timed out after {:?}", timeout))),
         };
 
         let mut step_results = ctx_arc

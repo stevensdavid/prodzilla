@@ -70,8 +70,7 @@ fn dynamic_to_json_value(val: Dynamic) -> Result<Value, ()> {
         return Ok(Value::String(s));
     }
     if let Some(arr) = val.clone().try_cast::<Array>() {
-        let json_arr: Result<Vec<Value>, ()> =
-            arr.into_iter().map(dynamic_to_json_value).collect();
+        let json_arr: Result<Vec<Value>, ()> = arr.into_iter().map(dynamic_to_json_value).collect();
         return Ok(Value::Array(json_arr?));
     }
     if let Some(map) = val.try_cast::<Map>() {

@@ -44,7 +44,9 @@ fn validate_script(monitor: &Monitor) -> Result<(), ApiError> {
     if monitor.script_path.is_some() {
         return Err(ApiError {
             error: "validation_error".to_string(),
-            message: "script_path is only valid in YAML config files. Use 'script' with inline content.".to_string(),
+            message:
+                "script_path is only valid in YAML config files. Use 'script' with inline content."
+                    .to_string(),
             details: None,
         });
     }

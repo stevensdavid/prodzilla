@@ -1,4 +1,7 @@
-use std::{collections::HashSet, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use serde::{de, Deserialize, Deserializer, Serialize};
 use tracing::warn;
