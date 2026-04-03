@@ -149,7 +149,7 @@ let resp = poll(|| {
 
 ```rhai
 // String ops (built-in to Rhai)
-let lower = s.to_lower();
+let lower = s.to_lower_case();
 let trimmed = s.trim();
 let parts = s.split(",");
 let replaced = s.replace("old", "new");
@@ -269,8 +269,10 @@ The existing mutual-exclusivity check in `Monitor`'s custom Deserialize expands:
 
 - `url` + `http_method` → single-step (no `steps`, no `script`)
 - `steps` → multi-step (no `url`/`http_method`, no `script`)
-- `script` → scripted (no `url`/`http_method`, no `steps`)
+- `script` or `script_path` → scripted (no `url`/`http_method`, no `steps`)
 - Exactly one of the three must be present
+
+The existing `MonitorHelper` struct in the custom `Deserialize` impl must be updated to include the new `script`, `script_path`, and `script_timeout_seconds` fields — otherwise they are silently dropped during deserialization. The existing empty-steps guard (`steps` present but empty → error) must also be preserved when expanding the validation logic.
 
 ### 3.4 Script File Resolution
 
@@ -318,20 +320,21 @@ Scripts are loaded at config load time and stored as `String` in the `Monitor` s
   └───────────┘   └────────────┘
 ```
 
-**Key detail: Async bridging.** Rhai's engine is synchronous. HTTP calls from scripts need to go through async Rust. The solution:
+**Key detail: Async bridging.** Rhai's engine is synchronous. HTTP calls from scripts need to go through async Rust. The solution uses `futures::executor::block_on` inside `tokio::task::spawn_blocking`:
 
 ```rust
-// In the script runner, we hold a Handle to the Tokio runtime
-// and use block_on for async operations called from scripts
+// In the script runner, host functions use futures::executor::block_on
+// to bridge from sync Rhai callbacks into async Rust.
+// We cannot use tokio's Handle::block_on() here because spawn_blocking
+// threads are still within the Tokio runtime context and would panic.
 
 fn register_http_functions(engine: &mut Engine, ctx: Arc<ScriptContext>) {
     let ctx_clone = ctx.clone();
     engine.register_fn("http_get", move |url: &str| -> Dynamic {
-        let rt = ctx_clone.runtime_handle.clone();
         let client = ctx_clone.http_client.clone();
 
-        // Bridge from sync Rhai → async Rust
-        let result = rt.block_on(async {
+        // Bridge from sync Rhai → async Rust using a non-Tokio executor
+        let result = futures::executor::block_on(async {
             client.get(url).send().await
         });
 
@@ -341,7 +344,7 @@ fn register_http_functions(engine: &mut Engine, ctx: Arc<ScriptContext>) {
 }
 ```
 
-Since each monitor runs in its own tokio task, blocking that task during script execution is acceptable — it doesn't block the runtime, just that monitor's task. This is the same pattern used by the existing synchronous `probe_and_store_result` flow.
+Script execution runs inside `tokio::task::spawn_blocking`, which offloads the CPU-bound Rhai interpreter off the async runtime's worker threads. The existing `probe_and_store_result` flow is async, so scripted monitors diverge here — they move into blocking context for the duration of script evaluation, then return a `MonitorResult` like any other monitor type.
 
 ### 3.6 Sandboxing & Resource Limits
 
@@ -377,6 +380,9 @@ engine.set_max_map_size(10_000);          // 10K map entries
 rhai = { version = "1", features = ["sync", "metadata"] }
 # "sync" — makes Engine Send+Sync for use across async tasks
 # "metadata" — enables function metadata for script IDE support
+futures = "0.3"
+# Used for futures::executor::block_on to bridge sync Rhai → async Rust
+# inside spawn_blocking (where Tokio's block_on would panic)
 ```
 
 ### 4.2 New Module Structure
@@ -411,8 +417,7 @@ src/
 
 /// Context shared between Rust host and Rhai script during execution
 pub struct ScriptContext {
-    pub http_client: reqwest::Client,
-    pub runtime_handle: tokio::runtime::Handle,
+    pub http_client: reqwest::Client,             // Clone of the global lazy_static CLIENT
     pub otel_context: opentelemetry::Context,
     pub step_results: Mutex<Vec<StepResult>>,    // Collected during execution
     pub assertion_failures: Mutex<Vec<String>>,   // Soft assertion failures
@@ -450,7 +455,6 @@ pub enum ScriptError {
 // src/scripting/mod.rs
 
 pub struct ScriptRunner {
-    engine: Engine,
     ast: AST,  // Pre-compiled script
 }
 
@@ -460,18 +464,33 @@ impl ScriptRunner {
         let mut engine = create_engine();  // Sets limits, registers types
         let ast = engine.compile(script_source)
             .map_err(|e| ScriptError::ParseError(e.to_string()))?;
-        Ok(Self { engine, ast })
+        Ok(Self { ast })
     }
 
-    /// Execute the script, returning collected step results
+    /// Validate that a script compiles without creating a runner
+    pub fn validate(script_source: &str) -> Result<(), ScriptError> {
+        let mut engine = create_engine();
+        engine.compile(script_source)
+            .map_err(|e| ScriptError::ParseError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Execute the script, returning collected step results.
+    /// Creates a fresh Engine per execution since host functions capture
+    /// per-execution context (ScriptContext). This is cheap — Rhai engine
+    /// creation is sub-millisecond.
     pub async fn execute(&self, ctx: ScriptContext) -> MonitorResult {
         let ctx = Arc::new(ctx);
-        register_host_functions(&mut self.engine, ctx.clone());
+        let timeout = ctx.timeout;
+        let ast = self.ast.clone();
+        let ctx_clone = ctx.clone();
 
         let result = tokio::time::timeout(
-            ctx.timeout,
+            timeout,
             tokio::task::spawn_blocking(move || {
-                self.engine.eval_ast(&self.ast)
+                let mut engine = create_engine();
+                register_host_functions(&mut engine, ctx_clone);
+                engine.eval_ast(&ast)
             })
         ).await;
 
@@ -535,8 +554,7 @@ See Section 7.2 for the full startup sequence with database seeding.
 
 if let Some(script_content) = &monitor.script {
     let ctx = ScriptContext {
-        http_client: get_http_client(),
-        runtime_handle: tokio::runtime::Handle::current(),
+        http_client: get_http_client(),  // Clone of the global lazy_static CLIENT
         otel_context: current_otel_context,
         step_results: Mutex::new(Vec::new()),
         assertion_failures: Mutex::new(Vec::new()),
@@ -551,7 +569,7 @@ if let Some(script_content) = &monitor.script {
     let monitor_result = runner.execute(ctx).await;
 
     // Store result (same path as existing monitors)
-    app_state.add_monitor_result(&monitor.name, monitor_result).await;
+    app_state.add_monitor_result(monitor.name.clone(), monitor_result);
 }
 ```
 
@@ -629,9 +647,9 @@ step("verify-order", || {
 ## 6. Risks & Mitigations
 
 ### Risk 1: Async ↔ Sync Bridge Complexity
-**Risk:** Using `block_on` inside `spawn_blocking` can be tricky. Nesting runtimes panics in Tokio.
+**Risk:** Using `block_on` inside `spawn_blocking` can be tricky. Nesting Tokio runtimes panics.
 
-**Mitigation:** Use `tokio::task::spawn_blocking` which runs on a separate thread pool. Inside that blocking context, use `Handle::block_on()` (not `Runtime::block_on()`). The Handle approach works because we're not inside an async context on the blocking thread. This is a well-established pattern.
+**Mitigation:** Use `tokio::task::spawn_blocking` to move script execution off the async runtime. Inside the blocking closure, use `futures::executor::block_on` (not Tokio's `Handle::block_on()` or `Runtime::block_on()`) to bridge back into async for HTTP calls. This works because `futures::executor::block_on` is a lightweight, standalone executor that doesn't conflict with the Tokio runtime context still present on `spawn_blocking` threads. Note: Tokio's `Handle::block_on()` will panic from `spawn_blocking` threads because they are still within the Tokio runtime context.
 
 ### Risk 2: Resource Consumption from Scripts
 **Risk:** A script with aggressive polling or many HTTP requests could overwhelm the target system.
@@ -784,7 +802,7 @@ curl -X PUT http://localhost:3000/api/v1/monitors/checkout-flow \
 // In create_monitor handler (or a shared validation layer):
 if let Some(script) = &monitor.script {
     ScriptRunner::validate(script).map_err(|e| ApiError {
-        error: "script_error".to_string(),
+        error: "validation_error".to_string(),
         message: format!("Script compilation failed: {}", e),
         details: None,
     })?;
