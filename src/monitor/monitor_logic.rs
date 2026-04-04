@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::Utc;
 use opentelemetry::global;
@@ -20,9 +21,12 @@ use crate::monitor::variables::substitute_variables;
 use crate::monitor::variables::ExecutionContext;
 use crate::monitor::variables::StepVariables;
 use crate::otel::metrics::MonitorStatus;
+use crate::scripting::types::ScriptContext;
+use crate::scripting::ScriptRunner;
 
 use super::expectations::validate_response;
 use super::http::call_endpoint;
+use super::http::get_client;
 use super::model::Monitor;
 use super::model::MonitorResult;
 use super::model::ScheduleParameters;
@@ -54,6 +58,86 @@ impl Monitorable for Monitor {
         .collect::<Vec<_>>();
 
         app_state.metrics.runs.add(1, &monitor_attributes);
+
+        // Scripted monitor execution path
+        if let Some(script_content) = &self.script {
+            let ctx = ScriptContext {
+                http_client: get_client().clone(),
+                step_results: Mutex::new(Vec::new()),
+                monitor_name: self.name.clone(),
+                timeout: Duration::from_secs(self.script_timeout_seconds.unwrap_or(60)),
+            };
+
+            let runner = match ScriptRunner::new(script_content) {
+                Ok(r) => r,
+                Err(e) => {
+                    let timestamp_started = Utc::now();
+                    let monitor_result = MonitorResult {
+                        monitor_name: self.name.clone(),
+                        timestamp_started,
+                        success: false,
+                        step_results: vec![StepResult {
+                            step_name: self.name.clone(),
+                            timestamp_started,
+                            success: false,
+                            error_message: Some(format!("Script compilation failed: {}", e)),
+                            response: None,
+                            trace_id: None,
+                            span_id: None,
+                        }],
+                    };
+                    app_state.metrics.errors.add(1, &monitor_attributes);
+                    app_state
+                        .metrics
+                        .status
+                        .record(MonitorStatus::Error.as_u64(), &monitor_attributes);
+                    error!(
+                        "Script compilation failed for monitor {}: {}",
+                        &self.name, e
+                    );
+                    app_state.add_monitor_result(self.name.clone(), monitor_result);
+                    return;
+                }
+            };
+            let monitor_result = runner.execute(ctx).await;
+
+            let success = monitor_result.success;
+            app_state.metrics.duration.record(
+                time_since(&monitor_result.timestamp_started),
+                &monitor_attributes,
+            );
+            app_state.metrics.status.record(
+                if success {
+                    MonitorStatus::Ok.as_u64()
+                } else {
+                    MonitorStatus::Error.as_u64()
+                },
+                &monitor_attributes,
+            );
+            if success {
+                app_state.metrics.errors.add(0, &monitor_attributes);
+            } else {
+                app_state.metrics.errors.add(1, &monitor_attributes);
+                let last_step = monitor_result.step_results.last();
+                let _ = alert_if_failure(
+                    success,
+                    last_step.and_then(|s| s.error_message.as_deref()),
+                    last_step.and_then(|s| s.response.as_ref()),
+                    &self.name,
+                    monitor_result.timestamp_started,
+                    &self.alerts,
+                    &last_step.and_then(|s| s.trace_id.clone()),
+                )
+                .await;
+            }
+
+            info!(
+                "Finished scripted monitor {}, success: {}",
+                &self.name, success
+            );
+            app_state.add_monitor_result(self.name.clone(), monitor_result);
+            return;
+        }
 
         let mut execution_context = ExecutionContext::new();
         let mut step_results: Vec<StepResult> = vec![];
@@ -316,6 +400,9 @@ mod monitor_logic_tests {
             },
             tags: None,
             alerts: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         };
 
         monitor.probe_and_store_result(app_state.clone()).await;
@@ -388,6 +475,9 @@ mod monitor_logic_tests {
                 url: format!("{}{}", mock_server.uri(), alert_path.to_owned()),
             }]),
             tags: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         };
 
         monitor.probe_and_store_result(app_state.clone()).await;
@@ -474,6 +564,9 @@ mod monitor_logic_tests {
             },
             alerts: None,
             tags: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         };
 
         monitor.probe_and_store_result(app_state.clone()).await;
@@ -484,5 +577,49 @@ mod monitor_logic_tests {
         let monitor_result = &results[0];
         assert!(monitor_result.success);
         assert_eq!(2, monitor_result.step_results.len());
+    }
+
+    #[tokio::test]
+    async fn test_scripted_monitor_compilation_failure_returns_failed_result() {
+        // Regression: compilation failure should produce a failed MonitorResult,
+        // not panic the tokio task
+        let monitor_name = "bad-script";
+        let app_state = Arc::new(AppState::new(Config { monitors: vec![] }));
+
+        let monitor = Monitor {
+            name: monitor_name.to_owned(),
+            url: None,
+            http_method: None,
+            with: None,
+            expectations: None,
+            sensitive: false,
+            steps: None,
+            script: Some("let x = !".to_string()), // invalid syntax
+            script_path: None,
+            script_timeout_seconds: None,
+            schedule: ScheduleParameters {
+                initial_delay: 0,
+                interval: 0,
+            },
+            alerts: None,
+            tags: None,
+        };
+
+        // Should not panic
+        monitor.probe_and_store_result(app_state.clone()).await;
+
+        let monitor_result_map = app_state.monitor_results.read().unwrap();
+        let results = &monitor_result_map[monitor_name];
+        assert_eq!(1, results.len());
+        let monitor_result = &results[0];
+        assert!(!monitor_result.success);
+        assert!(
+            monitor_result.step_results[0]
+                .error_message
+                .as_ref()
+                .unwrap()
+                .contains("compilation failed"),
+            "Error should mention compilation failure"
+        );
     }
 }

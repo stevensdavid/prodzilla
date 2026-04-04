@@ -5,6 +5,7 @@ mod config_store;
 mod errors;
 mod monitor;
 mod otel;
+mod scripting;
 mod web_server;
 
 use clap::Parser;
@@ -43,7 +44,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load YAML config (for seeding)
-    let config = load_config(args.file).await?;
+    let mut config = load_config(&args.file).await?;
+
+    // Resolve script file paths to inline content
+    let config_dir = std::path::Path::new(&args.file)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    config::resolve_script_paths(&mut config, config_dir)?;
 
     // Initialize config store
     let store = Arc::new(SqliteConfigStore::new(&args.db_url).await?);

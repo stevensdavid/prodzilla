@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Prodzilla is a lightweight synthetic monitoring tool written in Rust that tests user flows in production. It supports single-step monitors (traditional health checks) and multi-step monitors (chained requests with variable passing between steps). Runs with <15MB RAM. Fully integrated with OpenTelemetry for tracing and metrics.
+Prodzilla is a lightweight synthetic monitoring tool written in Rust that tests user flows in production. It supports three monitor types: single-step monitors (traditional health checks), multi-step monitors (chained requests with variable passing between steps), and scripted monitors (arbitrary Rhai scripts with full HTTP access and assertions). Runs with <15MB RAM. Fully integrated with OpenTelemetry for tracing and metrics.
 
 ## Build & Development Commands
 
@@ -27,7 +27,7 @@ Single binary, async Rust application using Axum (web) and Tokio (runtime).
 
 **Key modules:**
 
-- `src/config.rs` — YAML config loading with validation (unique monitor names, mutual exclusivity of single-step vs multi-step fields)
+- `src/config.rs` — YAML config loading with validation (unique monitor names, mutual exclusivity of single-step vs multi-step vs scripted fields); resolves `script_path` to inline content at startup
 - `src/app_state.rs` — Shared state: `RwLock<HashMap<String, Vec<MonitorResult>>>` storing last 100 results per monitor
 - `src/monitor/` — Core monitoring logic:
   - `model.rs` — Monitor, Step, Expectation, MonitorResult, StepResult types
@@ -39,6 +39,11 @@ Single binary, async Rust application using Axum (web) and Tokio (runtime).
 - `src/web_server/` — API routes under `/api/v1`: `GET/POST /monitors`, `GET /monitors/summary`, `GET/PUT/DELETE /monitors/:name`, `GET /monitors/:name/results`, `POST /monitors/:name/trigger`. Prometheus `/metrics` on separate port (default 9464). SPA fallback serves frontend for all other routes.
 - `src/alerts/outbound_webhook.rs` — Webhook alerting with auto-detected Slack formatting, body truncation to 500 chars
 - `src/otel/` — OpenTelemetry setup: metrics (OTLP/stdout/Prometheus) and tracing (OTLP/stdout)
+- `src/scripting/` — Rhai-based scripting engine for scripted monitors:
+  - `mod.rs` — `ScriptRunner`: compile-once AST, timeout-wrapped async `execute()` returning `MonitorResult`
+  - `engine.rs` — `create_engine()` with resource limits (1M ops, 64 call levels, 1MB strings, 10K collections)
+  - `types.rs` — `ScriptContext`, `ScriptResponse`, `ScriptError`
+  - `host_functions/` — Rhai-callable functions: `http_get/post/put/delete/request`, `assert`, `assert_eq`, `parse_json`, `to_json`, `env`, `uuid`, `timestamp`, `log_info/warn/debug`, `step(name, closure)`
 - `src/errors.rs` — Custom error types
 - `src/test_utils.rs` — Builder functions for test monitor construction
 
@@ -54,8 +59,10 @@ Single binary, async Rust application using Axum (web) and Tokio (runtime).
 ## Configuration
 
 Config file is YAML (`prodzilla.yml` by default). Key structure:
-- Monitors define `url` + `http_method` (single-step) OR `steps` array (multi-step) — never both
-- Variable syntax: `${{ steps.step-name.response.body.fieldName }}` for chaining step outputs
+- Monitors define `url` + `http_method` (single-step), OR `steps` array (multi-step), OR `script`/`script_path` (scripted) — exactly one type required
+- `script_path` (YAML-only) is resolved to inline `script` content at startup; the API only accepts inline `script`
+- Optional `script_timeout_seconds` (default 60) controls scripted monitor execution timeout
+- Variable syntax: `${{ steps.step-name.response.body.fieldName }}` for chaining step outputs in multi-step monitors
 - OTel configured via standard env vars: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_METRICS_EXPORTER`, `OTEL_TRACES_EXPORTER`, `RUST_LOG`
 
 ## CI

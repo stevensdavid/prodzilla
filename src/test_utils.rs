@@ -37,6 +37,9 @@ pub mod probe_test_utils {
             tags: None,
             sensitive: false,
             steps: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         }
     }
 
@@ -67,6 +70,9 @@ pub mod probe_test_utils {
             tags: None,
             sensitive: false,
             steps: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         }
     }
 
@@ -98,6 +104,9 @@ pub mod probe_test_utils {
             tags: None,
             sensitive: false,
             steps: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         }
     }
 
@@ -135,6 +144,9 @@ pub mod probe_test_utils {
             tags: None,
             sensitive: false,
             steps: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
         }
     }
 }
