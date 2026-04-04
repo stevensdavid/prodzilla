@@ -2,7 +2,7 @@
 
 Prodzilla is a modern synthetic monitoring tool built in Rust. It's focused on testing complex user flows in production, whilst maintaining human readability.
 
-Prodzilla supports chained requests to endpoints, passing of values from one response to another request, verifying responses are as expected, and outputting alerts via webhooks on failures. It also exposes an API that allow viewing results in json and manual triggering of probes. It's integrated with OpenTelemetry, so includes a trace_id for every request made to your system. May add a UI in future.
+Prodzilla supports three monitor types: single-step monitors (traditional health checks), multi-step monitors (chained requests with variable passing), and scripted monitors (arbitrary Rhai scripts with full HTTP access and custom assertions). It also supports verifying responses are as expected, and outputting alerts via webhooks on failures. It exposes an API that allows viewing results in JSON, manual triggering of monitors, and CRUD management of monitors. It's integrated with OpenTelemetry, so includes a trace_id for every request made to your system.
 
 It's also lightning fast, runs with < 15mb of ram, and is free to host on [Shuttle](https://shuttle.rs/).
 
@@ -21,6 +21,7 @@ To be part of the community, or for any questions, join our [Discord](https://di
 - [Configuring Synthetic Monitors](#configuring-synthetic-monitors)
   - [Single-Step Monitors](#single-step-monitors)
   - [Multi-Step Monitors](#multi-step-monitors)
+  - [Scripted Monitors](#scripted-monitors)
   - [Variables](#variables)
   - [Expectations](#expectations)
 - [Notifications for Failures](#notifications-for-failures)
@@ -136,7 +137,79 @@ monitors:
       owner: super-team-1
 ```
 
-**Note:** A monitor must have either `steps` OR the root-level `url`/`http_method` fields, but not both. Step names must be unique within a monitor.
+**Note:** A monitor must have exactly one of: `steps`, root-level `url`/`http_method`, or `script`/`script_path`. Step names must be unique within a monitor.
+
+### Scripted Monitors
+
+Scripted monitors let you write arbitrary logic using the [Rhai](https://rhai.rs/) scripting language. This is useful for flows that require conditional logic, loops, or complex assertions that can't be expressed with chained steps.
+
+Use the `script` field for inline scripts, or `script_path` to reference an external `.rhai` file (YAML config only; the API requires inline `script`). Use `script_timeout_seconds` to set a custom timeout (default: 60 seconds).
+
+```yaml
+monitors:
+  - name: scripted-api-check
+    script: |
+      let resp = http_get("https://api.example.com/health");
+      assert(resp.status == 200, "health check failed");
+      let data = parse_json(resp.body);
+      assert(data.status == "ok", "unexpected status: " + data.status);
+    schedule:
+      initial_delay: 5
+      interval: 60
+    alerts:
+      - url: https://hooks.slack.com/services/T000/B000/XXXX
+```
+
+Or with a file reference:
+
+```yaml
+monitors:
+  - name: scripted-flow
+    script_path: scripts/my_flow.rhai
+    script_timeout_seconds: 30
+    schedule:
+      initial_delay: 5
+      interval: 120
+```
+
+#### Available script functions
+
+| Function | Description |
+| -------- | ----------- |
+| `http_get(url)` | HTTP GET, returns response object |
+| `http_post(url, body)` | HTTP POST with string body |
+| `http_put(url, body)` | HTTP PUT with string body |
+| `http_delete(url)` | HTTP DELETE |
+| `http_request(method, url, headers_map, body)` | Full HTTP control |
+| `assert(condition, message)` | Fails the script if condition is false |
+| `assert_eq(a, b, message)` | Fails if `a != b` |
+| `parse_json(string)` | Parses a JSON string into an object |
+| `to_json(value)` | Serializes a value to a JSON string |
+| `env(name)` | Reads an environment variable |
+| `uuid()` | Generates a UUID v4 string |
+| `timestamp()` | Current UTC time as ISO 8601 string |
+| `timestamp_epoch()` | Current Unix timestamp in seconds |
+| `log_info(msg)` / `log_warn(msg)` / `log_debug(msg)` | Structured logging |
+| `step(name, \|\| { ... })` | Wraps a block as a named step for result tracking |
+
+Response objects have `.status` (int), `.body` (string), `.headers` (map), and `.duration_ms` (int) fields.
+
+Use `step()` to record named steps within a script — these appear as individual step results in the API output. Variables declared outside a step closure are accessible in subsequent steps, making it easy to pass data between them:
+
+```rhai
+let ip = "";
+
+step("get-ip", || {
+    let resp = http_get("https://api.ipify.org/?format=json");
+    assert(resp.status == 200, "failed to get IP");
+    ip = parse_json(resp.body).ip;
+});
+
+step("get-location", || {
+    let resp = http_get("https://ipinfo.io/" + ip + "/geo");
+    assert(resp.status == 200, "failed to get location");
+});
+```
 
 ### Variables
 
@@ -405,6 +478,7 @@ Progress on the base set of synthetic monitoring features is loosely tracked bel
   - Parameters in queries :white_check_mark:
   - Triggering probes manually :white_check_mark:
   - Generation of fields e.g. UUIDs :white_check_mark:
+  - Scripted monitors (arbitrary Rhai scripts) :white_check_mark:
   - Parametrized tests
 - Easy clone and deploy
   - On Shuttle :white_check_mark:

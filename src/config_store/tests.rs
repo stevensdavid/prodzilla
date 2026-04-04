@@ -26,6 +26,9 @@ pub fn make_test_monitor(name: &str, url: &str) -> Monitor {
         tags: None,
         sensitive: false,
         steps: None,
+        script: None,
+        script_path: None,
+        script_timeout_seconds: None,
     }
 }
 
@@ -96,6 +99,9 @@ pub fn make_full_test_monitor(name: &str) -> Monitor {
                 sensitive: false,
             },
         ]),
+        script: None,
+        script_path: None,
+        script_timeout_seconds: None,
     }
 }
 
@@ -332,6 +338,9 @@ pub async fn test_json_roundtrip_with_all_fields(store: &dyn ConfigStore) {
         ])),
         sensitive: false,
         steps: None,
+        script: None,
+        script_path: None,
+        script_timeout_seconds: None,
     };
 
     store.create_monitor(&monitor).await.unwrap();
