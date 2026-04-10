@@ -22,7 +22,7 @@ export function useDiagnostics(script: string): ScriptDiagnostic[] {
       abortRef.current = controller
 
       try {
-        const result = await validateScript(script)
+        const result = await validateScript(script, controller.signal)
         if (!controller.signal.aborted) {
           setDiagnostics(result.diagnostics)
         }

@@ -114,12 +114,11 @@ impl ScriptRunner {
             // Mark the last step as failed if the overall script failed
             if let Some(last) = step_results.last_mut() {
                 if last.success {
+                    // Step reported success but script failed — override the step
                     last.success = false;
                     last.error_message = error_message.clone();
-                }
-                // Only set error_message if not already set (e.g., from within a step closure)
-                // to avoid overwriting clean assertion messages with Rhai-wrapped versions
-                if last.error_message.is_none() {
+                } else if last.error_message.is_none() {
+                    // Step already failed but has no error message — use the script-level error
                     last.error_message = error_message.clone();
                 }
             }

@@ -232,14 +232,8 @@ pub async fn trigger_monitor(
     };
 
     if let Some(monitor) = monitor {
-        monitor.probe_and_store_result(state.clone()).await;
-
-        let lock = state.monitor_results.read().unwrap();
-        if let Some(results) = lock.get(&name) {
-            return Ok(Json(
-                serde_json::to_value(results.last().unwrap().clone()).unwrap(),
-            ));
-        }
+        let result = monitor.probe_and_store_result(state.clone()).await;
+        return Ok(Json(serde_json::to_value(result).unwrap()));
     }
 
     Err(ApiError {
@@ -484,6 +478,7 @@ pub async fn scripting_execute(
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use crate::monitor::http::get_client;
     use crate::scripting::types::ScriptContext;
 
     let timeout_secs = req.timeout_seconds.unwrap_or(30).min(120);
@@ -495,7 +490,7 @@ pub async fn scripting_execute(
     })?;
 
     let ctx = ScriptContext {
-        http_client: reqwest::Client::new(),
+        http_client: get_client().clone(),
         step_results: Mutex::new(Vec::new()),
         log_entries: Mutex::new(Vec::new()),
         monitor_name: "dry-run".to_string(),
@@ -521,6 +516,8 @@ mod tests {
     use axum::http::{self, Request, Response};
     use tokio::sync::broadcast;
     use tower::util::ServiceExt;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_monitor(name: &str) -> Monitor {
         Monitor {
@@ -1033,17 +1030,34 @@ mod tests {
 
         // All 17 host functions
         for name in &[
-            "http_get", "http_post", "http_put", "http_delete", "http_request",
-            "assert", "assert_eq", "parse_json", "to_json",
-            "env", "uuid", "timestamp", "timestamp_epoch",
-            "log_info", "log_warn", "log_debug", "step",
+            "http_get",
+            "http_post",
+            "http_put",
+            "http_delete",
+            "http_request",
+            "assert",
+            "assert_eq",
+            "parse_json",
+            "to_json",
+            "env",
+            "uuid",
+            "timestamp",
+            "timestamp_epoch",
+            "log_info",
+            "log_warn",
+            "log_debug",
+            "step",
         ] {
             assert!(labels.contains(name), "Missing completion for: {}", name);
         }
 
         // ScriptResponse properties
         for prop in &["status", "body", "headers", "duration_ms"] {
-            assert!(labels.contains(prop), "Missing property completion for: {}", prop);
+            assert!(
+                labels.contains(prop),
+                "Missing property completion for: {}",
+                prop
+            );
         }
     }
 
@@ -1164,9 +1178,7 @@ mod tests {
                 .method(http::Method::POST)
                 .uri("/scripting/execute")
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"script":"assert(false, \"boom\");"}"#,
-                ))
+                .body(Body::from(r#"{"script":"assert(false, \"boom\");"}"#))
                 .unwrap(),
         )
         .await;
@@ -1279,6 +1291,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_scripting_execute_uses_shared_http_client() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(header("user-agent", "Prodzilla Probe/1.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let (app, _rx, _state) = setup().await;
+        let script = format!(
+            r#"let resp = http_get("{}"); assert(resp.status == 200, "expected 200");"#,
+            mock_server.uri()
+        );
+        let body = serde_json::json!({
+            "script": script,
+            "timeout_seconds": 10
+        });
+
+        let resp = send(
+            app,
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/scripting/execute")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let result: ExecuteScriptResponse = response_json(resp).await;
+        assert!(
+            result.result.success,
+            "Script should succeed; step errors: {:?}",
+            result
+                .result
+                .step_results
+                .iter()
+                .filter_map(|s| s.error_message.as_ref())
+                .collect::<Vec<_>>()
+        );
+        // wiremock .expect(1) verifies the request had the correct user-agent
+    }
+
+    #[tokio::test]
     async fn test_create_monitor_with_script() {
         let (app, _rx, _state) = setup().await;
 
@@ -1330,7 +1388,10 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let error: ApiError = response_json(resp).await;
         assert_eq!(error.error, "validation_error");
-        assert!(error.details.is_some(), "Should include diagnostics in details");
+        assert!(
+            error.details.is_some(),
+            "Should include diagnostics in details"
+        );
         let details = error.details.unwrap();
         assert!(details.is_array());
         let diag = &details[0];

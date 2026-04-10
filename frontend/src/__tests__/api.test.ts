@@ -223,6 +223,14 @@ describe('validateScript', () => {
     expect(options.method).toBe('POST')
     expect(JSON.parse(options.body)).toEqual({ script: 'let x = 1;' })
   })
+
+  it('passes signal to fetch when provided', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ valid: true, diagnostics: [] }))
+    const controller = new AbortController()
+    await validateScript('let x = 1;', controller.signal)
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.signal).toBe(controller.signal)
+  })
 })
 
 describe('executeScript', () => {

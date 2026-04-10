@@ -341,3 +341,25 @@ async fn test_log_capture_during_steps() {
     assert_eq!(output.logs.len(), 1);
     assert_eq!(output.logs[0].message, "inside step");
 }
+
+#[tokio::test]
+async fn test_step_with_own_error_not_overwritten_by_script_error() {
+    // A step that fails with its own error, followed by another failure.
+    // The step's original error message should be preserved.
+    let script = r#"
+        step("check", || {
+            assert(false, "step-level failure");
+        });
+    "#;
+    let runner = ScriptRunner::new(script).unwrap();
+    let output = runner.execute(make_ctx()).await;
+    assert!(!output.result.success);
+    let last = output.result.step_results.last().unwrap();
+    assert!(!last.success);
+    let error = last.error_message.as_ref().unwrap();
+    assert_eq!(
+        error, "step-level failure",
+        "Step's own error should be preserved, got: {}",
+        error
+    );
+}

@@ -42,7 +42,7 @@ describe('useDiagnostics', () => {
     })
 
     expect(mockedApi.validateScript).toHaveBeenCalledTimes(1)
-    expect(mockedApi.validateScript).toHaveBeenCalledWith('let x = 1;')
+    expect(mockedApi.validateScript).toHaveBeenCalledWith('let x = 1;', expect.any(AbortSignal))
   })
 
   it('does not call validate before 300ms', async () => {
@@ -82,7 +82,7 @@ describe('useDiagnostics', () => {
 
     // Only the second script value should have been validated
     expect(mockedApi.validateScript).toHaveBeenCalledTimes(1)
-    expect(mockedApi.validateScript).toHaveBeenCalledWith('ab')
+    expect(mockedApi.validateScript).toHaveBeenCalledWith('ab', expect.any(AbortSignal))
   })
 
   it('returns diagnostics from backend', async () => {

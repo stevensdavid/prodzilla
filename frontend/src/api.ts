@@ -113,12 +113,14 @@ export async function getScriptingCompletions(): Promise<CompletionsResponse> {
 }
 
 export async function validateScript(
-  script: string
+  script: string,
+  signal?: AbortSignal
 ): Promise<ValidateScriptResponse> {
   return request<ValidateScriptResponse>('/api/v1/scripting/validate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ script }),
+    signal,
   })
 }
 
