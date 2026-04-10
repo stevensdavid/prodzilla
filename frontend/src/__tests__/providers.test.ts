@@ -68,9 +68,6 @@ describe('registerCompletionProvider', () => {
         label: 'status',
         kind: 'property',
         detail: 'status: i64',
-        documentation: null,
-        insert_text: null,
-        insert_text_rules: null,
       },
     ]
     mockedApi.getScriptingCompletions.mockResolvedValue({ items: mockItems })
@@ -119,8 +116,6 @@ describe('registerHoverProvider', () => {
         kind: 'function',
         detail: 'http_get(url: &str) -> ScriptResponse',
         documentation: 'Makes an HTTP GET request',
-        insert_text: null,
-        insert_text_rules: null,
       },
     ]
     mockedApi.getScriptingCompletions.mockResolvedValue({ items: mockItems })

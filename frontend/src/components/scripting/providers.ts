@@ -1,5 +1,5 @@
 import type { Monaco } from '@monaco-editor/react'
-import type { IDisposable } from 'monaco-editor'
+import type { IDisposable, editor, Position } from 'monaco-editor'
 import { getScriptingCompletions } from '../../api'
 import type { ScriptingCompletionItem } from '../../types'
 import { RHAI_LANGUAGE_ID } from './rhai-language'
@@ -33,7 +33,7 @@ function mapKind(
 
 export function registerCompletionProvider(monaco: Monaco): IDisposable {
   return monaco.languages.registerCompletionItemProvider(RHAI_LANGUAGE_ID, {
-    provideCompletionItems: async (model, position) => {
+    provideCompletionItems: async (model: editor.ITextModel, position: Position) => {
       const items = await fetchCompletions()
       const word = model.getWordUntilPosition(position)
       const range = {
@@ -64,7 +64,7 @@ export function registerCompletionProvider(monaco: Monaco): IDisposable {
 
 export function registerHoverProvider(monaco: Monaco): IDisposable {
   return monaco.languages.registerHoverProvider(RHAI_LANGUAGE_ID, {
-    provideHover: async (model, position) => {
+    provideHover: async (model: editor.ITextModel, position: Position) => {
       const word = model.getWordAtPosition(position)
       if (!word) return null
 
