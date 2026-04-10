@@ -1,16 +1,5 @@
-import type { Expectation } from '../types'
 import ExpectationForm from './ExpectationForm'
-
-export interface StepFormState {
-  name: string
-  url: string
-  httpMethod: string
-  headers: Array<{ key: string; value: string }>
-  body: string
-  timeoutSeconds: string
-  sensitive: boolean
-  expectations: Expectation[]
-}
+import type { StepFormState } from './step-form-utils'
 
 interface StepFormProps {
   index: number
@@ -21,19 +10,6 @@ interface StepFormProps {
 }
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
-
-export function emptyStepFormState(): StepFormState {
-  return {
-    name: '',
-    url: '',
-    httpMethod: 'GET',
-    headers: [],
-    body: '',
-    timeoutSeconds: '',
-    sensitive: false,
-    expectations: [],
-  }
-}
 
 export default function StepForm({
   index,

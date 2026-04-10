@@ -4,7 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getMonitor, updateMonitor } from '../api'
 import type { Monitor } from '../types'
 import { ApiRequestError } from '../types'
-import MonitorForm, { monitorToFormState } from '../components/MonitorForm'
+import MonitorForm from '../components/MonitorForm'
+import { monitorToFormState } from '../components/monitor-form-utils'
 
 export default function MonitorEdit() {
   const { name } = useParams<{ name: string }>()
