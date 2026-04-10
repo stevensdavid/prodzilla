@@ -10,11 +10,32 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::monitor::model::{MonitorResult, StepResult};
-use types::{ScriptContext, ScriptError};
+use types::{LogEntry, ScriptContext, ScriptDiagnostic, ScriptError};
+
+/// Full output from script execution, including logs captured during the run.
+pub struct ExecutionOutput {
+    pub result: MonitorResult,
+    pub logs: Vec<LogEntry>,
+}
 
 #[derive(Debug)]
 pub struct ScriptRunner {
     ast: rhai::AST,
+}
+
+fn parse_error_to_script_error(e: rhai::ParseError) -> ScriptError {
+    let line = e.1.line();
+    let column = e.1.position();
+    let message = e.to_string();
+    let diagnostic_message = e.0.to_string();
+    ScriptError::ParseError {
+        message,
+        diagnostics: vec![ScriptDiagnostic {
+            line,
+            column,
+            message: diagnostic_message,
+        }],
+    }
 }
 
 impl ScriptRunner {
@@ -22,7 +43,7 @@ impl ScriptRunner {
         let engine = engine::create_engine();
         let ast = engine
             .compile(script_source)
-            .map_err(|e| ScriptError::ParseError(e.to_string()))?;
+            .map_err(parse_error_to_script_error)?;
         Ok(Self { ast })
     }
 
@@ -30,11 +51,11 @@ impl ScriptRunner {
         let engine = engine::create_engine();
         engine
             .compile(script_source)
-            .map_err(|e| ScriptError::ParseError(e.to_string()))?;
+            .map_err(parse_error_to_script_error)?;
         Ok(())
     }
 
-    pub async fn execute(&self, ctx: ScriptContext) -> MonitorResult {
+    pub async fn execute(&self, ctx: ScriptContext) -> ExecutionOutput {
         let monitor_name = ctx.monitor_name.clone();
         let timeout = ctx.timeout;
         let timestamp_started = Utc::now();
@@ -52,7 +73,7 @@ impl ScriptRunner {
                     host_functions::assertions::register(&mut engine);
                     host_functions::parsing::register(&mut engine);
                     host_functions::utilities::register(&mut engine);
-                    host_functions::logging::register(&mut engine);
+                    host_functions::logging::register(&mut engine, Arc::clone(&ctx_arc));
                     host_functions::steps::register(&mut engine, Arc::clone(&ctx_arc));
 
                     engine.run_ast(&ast)
@@ -104,11 +125,21 @@ impl ScriptRunner {
             }
         }
 
-        MonitorResult {
-            monitor_name,
-            timestamp_started,
-            success,
-            step_results,
+        let logs = ctx_arc
+            .log_entries
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect::<Vec<_>>();
+
+        ExecutionOutput {
+            result: MonitorResult {
+                monitor_name,
+                timestamp_started,
+                success,
+                step_results,
+            },
+            logs,
         }
     }
 }

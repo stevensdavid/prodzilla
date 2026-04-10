@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import type { Expectation, Monitor, Step, InputParameters } from '../types'
 import ExpectationForm from './ExpectationForm'
 import StepFormComponent, {
@@ -6,11 +6,16 @@ import StepFormComponent, {
   type StepFormState,
 } from './StepForm'
 
+const ScriptEditor = lazy(() => import('./scripting/ScriptEditor'))
+const DryRunPanel = lazy(() => import('./scripting/DryRunPanel'))
+
 // --- Form state shape ---
+
+export type MonitorType = 'single' | 'multi' | 'scripted'
 
 export interface MonitorFormState {
   name: string
-  isMultiStep: boolean
+  monitorType: MonitorType
   // Single-step fields
   url: string
   httpMethod: string
@@ -21,6 +26,9 @@ export interface MonitorFormState {
   expectations: Expectation[]
   // Multi-step fields
   steps: StepFormState[]
+  // Scripted fields
+  script: string
+  scriptTimeoutSeconds: string
   // Common fields
   initialDelay: string
   interval: string
@@ -31,7 +39,7 @@ export interface MonitorFormState {
 export function emptyFormState(): MonitorFormState {
   return {
     name: '',
-    isMultiStep: false,
+    monitorType: 'single',
     url: '',
     httpMethod: 'GET',
     headers: [],
@@ -40,6 +48,8 @@ export function emptyFormState(): MonitorFormState {
     sensitive: false,
     expectations: [],
     steps: [],
+    script: '',
+    scriptTimeoutSeconds: '30',
     initialDelay: '0',
     interval: '60',
     alerts: [],
@@ -48,12 +58,21 @@ export function emptyFormState(): MonitorFormState {
 }
 
 export function monitorToFormState(monitor: Monitor): MonitorFormState {
-  const isMultiStep = !!monitor.steps && monitor.steps.length > 0
+  const common = {
+    name: monitor.name,
+    initialDelay: String(monitor.schedule.initial_delay),
+    interval: String(monitor.schedule.interval),
+    alerts: (monitor.alerts ?? []).map((a) => ({ url: a.url })),
+    tags: Object.entries(monitor.tags ?? {}).map(([key, value]) => ({
+      key,
+      value,
+    })),
+  }
 
-  if (isMultiStep) {
+  if (monitor.script) {
     return {
-      name: monitor.name,
-      isMultiStep: true,
+      ...common,
+      monitorType: 'scripted',
       url: '',
       httpMethod: 'GET',
       headers: [],
@@ -61,20 +80,32 @@ export function monitorToFormState(monitor: Monitor): MonitorFormState {
       timeoutSeconds: '',
       sensitive: false,
       expectations: [],
-      steps: (monitor.steps ?? []).map(stepToFormState),
-      initialDelay: String(monitor.schedule.initial_delay),
-      interval: String(monitor.schedule.interval),
-      alerts: (monitor.alerts ?? []).map((a) => ({ url: a.url })),
-      tags: Object.entries(monitor.tags ?? {}).map(([key, value]) => ({
-        key,
-        value,
-      })),
+      steps: [],
+      script: monitor.script,
+      scriptTimeoutSeconds: String(monitor.script_timeout_seconds ?? 30),
+    }
+  }
+
+  if (monitor.steps && monitor.steps.length > 0) {
+    return {
+      ...common,
+      monitorType: 'multi',
+      url: '',
+      httpMethod: 'GET',
+      headers: [],
+      body: '',
+      timeoutSeconds: '',
+      sensitive: false,
+      expectations: [],
+      steps: monitor.steps.map(stepToFormState),
+      script: '',
+      scriptTimeoutSeconds: '30',
     }
   }
 
   return {
-    name: monitor.name,
-    isMultiStep: false,
+    ...common,
+    monitorType: 'single',
     url: monitor.url ?? '',
     httpMethod: monitor.http_method ?? 'GET',
     headers: Object.entries(monitor.with?.headers ?? {}).map(([key, value]) => ({
@@ -88,13 +119,8 @@ export function monitorToFormState(monitor: Monitor): MonitorFormState {
     sensitive: monitor.sensitive ?? false,
     expectations: monitor.expectations ?? [],
     steps: [],
-    initialDelay: String(monitor.schedule.initial_delay),
-    interval: String(monitor.schedule.interval),
-    alerts: (monitor.alerts ?? []).map((a) => ({ url: a.url })),
-    tags: Object.entries(monitor.tags ?? {}).map(([key, value]) => ({
-      key,
-      value,
-    })),
+    script: '',
+    scriptTimeoutSeconds: '30',
   }
 }
 
@@ -157,7 +183,16 @@ export function formStateToMonitor(state: MonitorFormState): Monitor {
     tags: Object.keys(tags).length > 0 ? tags : undefined,
   }
 
-  if (state.isMultiStep) {
+  if (state.monitorType === 'scripted') {
+    return {
+      ...base,
+      script: state.script,
+      script_timeout_seconds:
+        parseInt(state.scriptTimeoutSeconds, 10) || 30,
+    }
+  }
+
+  if (state.monitorType === 'multi') {
     const steps: Step[] = state.steps.map((s) => ({
       name: s.name.trim(),
       url: s.url.trim(),
@@ -186,6 +221,7 @@ export interface ValidationErrors {
   name?: string
   url?: string
   steps?: string
+  script?: string
   interval?: string
   [key: string]: string | undefined
 }
@@ -194,9 +230,10 @@ export function validateForm(state: MonitorFormState): ValidationErrors {
   const errors: ValidationErrors = {}
 
   if (!state.name.trim()) errors.name = 'Name is required'
-  if (!state.isMultiStep) {
+
+  if (state.monitorType === 'single') {
     if (!state.url.trim()) errors.url = 'URL is required'
-  } else {
+  } else if (state.monitorType === 'multi') {
     if (state.steps.length === 0) errors.steps = 'At least one step is required'
     for (let i = 0; i < state.steps.length; i++) {
       const s = state.steps[i]
@@ -207,6 +244,8 @@ export function validateForm(state: MonitorFormState): ValidationErrors {
     if (new Set(names).size !== names.length) {
       errors.steps = 'Step names must be unique'
     }
+  } else if (state.monitorType === 'scripted') {
+    if (!state.script.trim()) errors.script = 'Script is required'
   }
 
   const interval = parseInt(state.interval, 10)
@@ -287,8 +326,8 @@ export default function MonitorForm({
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
-              checked={!form.isMultiStep}
-              onChange={() => update({ isMultiStep: false })}
+              checked={form.monitorType === 'single'}
+              onChange={() => update({ monitorType: 'single' })}
               className="border-gray-300"
             />
             Single-step
@@ -296,10 +335,10 @@ export default function MonitorForm({
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
-              checked={form.isMultiStep}
+              checked={form.monitorType === 'multi'}
               onChange={() =>
                 update({
-                  isMultiStep: true,
+                  monitorType: 'multi',
                   steps:
                     form.steps.length > 0
                       ? form.steps
@@ -310,11 +349,20 @@ export default function MonitorForm({
             />
             Multi-step
           </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              checked={form.monitorType === 'scripted'}
+              onChange={() => update({ monitorType: 'scripted' })}
+              className="border-gray-300"
+            />
+            Scripted
+          </label>
         </div>
       </div>
 
       {/* Single-step request fields */}
-      {!form.isMultiStep && (
+      {form.monitorType === 'single' && (
         <fieldset className="space-y-4 border border-gray-200 rounded-lg p-4">
           <legend className="text-sm font-semibold text-gray-700 px-1">
             Request
@@ -496,8 +544,55 @@ export default function MonitorForm({
         </fieldset>
       )}
 
+      {/* Scripted */}
+      {form.monitorType === 'scripted' && (
+        <fieldset className="space-y-4 border border-gray-200 rounded-lg p-4">
+          <legend className="text-sm font-semibold text-gray-700 px-1">
+            Script
+          </legend>
+          {errors.script && (
+            <p className="text-sm text-red-600">{errors.script}</p>
+          )}
+          <Suspense
+            fallback={
+              <div className="h-[400px] bg-gray-900 rounded-md flex items-center justify-center text-gray-400 text-sm">
+                Loading editor...
+              </div>
+            }
+          >
+            <ScriptEditor
+              value={form.script}
+              onChange={(script) => update({ script })}
+            />
+          </Suspense>
+          <div className="w-48">
+            <label className="block text-sm font-medium text-gray-700">
+              Timeout (s)
+            </label>
+            <input
+              type="number"
+              value={form.scriptTimeoutSeconds}
+              onChange={(e) =>
+                update({ scriptTimeoutSeconds: e.target.value })
+              }
+              className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+              min="1"
+              max="120"
+            />
+          </div>
+          <Suspense fallback={null}>
+            <DryRunPanel
+              script={form.script}
+              timeoutSeconds={
+                parseInt(form.scriptTimeoutSeconds, 10) || 30
+              }
+            />
+          </Suspense>
+        </fieldset>
+      )}
+
       {/* Multi-step */}
-      {form.isMultiStep && (
+      {form.monitorType === 'multi' && (
         <fieldset className="space-y-4 border border-gray-200 rounded-lg p-4">
           <legend className="text-sm font-semibold text-gray-700 px-1">
             Steps

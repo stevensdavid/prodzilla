@@ -4,6 +4,9 @@ import type {
   MonitorListResponse,
   MonitorResult,
   MonitorSummary,
+  CompletionsResponse,
+  ValidateScriptResponse,
+  ExecuteScriptResponse,
   ApiRequestError as ApiRequestErrorType,
 } from './types'
 import { ApiRequestError } from './types'
@@ -101,4 +104,36 @@ export async function triggerMonitor(name: string): Promise<MonitorResult> {
     `/api/v1/monitors/${encodeURIComponent(name)}/trigger`,
     { method: 'POST' }
   )
+}
+
+// --- Scripting endpoints ---
+
+export async function getScriptingCompletions(): Promise<CompletionsResponse> {
+  return request<CompletionsResponse>('/api/v1/scripting/completions')
+}
+
+export async function validateScript(
+  script: string
+): Promise<ValidateScriptResponse> {
+  return request<ValidateScriptResponse>('/api/v1/scripting/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ script }),
+  })
+}
+
+export async function executeScript(
+  script: string,
+  timeoutSeconds?: number
+): Promise<ExecuteScriptResponse> {
+  return request<ExecuteScriptResponse>('/api/v1/scripting/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      script,
+      ...(timeoutSeconds !== undefined && {
+        timeout_seconds: timeoutSeconds,
+      }),
+    }),
+  })
 }

@@ -138,7 +138,11 @@ export default function MonitorList() {
                       <StatusBadge status={summary?.status ?? 'PENDING'} />
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
-                      {m.monitor.steps ? 'Multi-step' : 'Single-step'}
+                      {m.monitor.script
+                        ? 'Scripted'
+                        : m.monitor.steps
+                          ? 'Multi-step'
+                          : 'Single-step'}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
                       {m.monitor.schedule.interval}s

@@ -48,6 +48,8 @@ export interface Monitor {
   expectations?: Expectation[]
   sensitive?: boolean
   steps?: Step[]
+  script?: string
+  script_timeout_seconds?: number
   schedule: ScheduleParameters
   alerts?: Alert[]
   tags?: Record<string, string>
@@ -121,4 +123,44 @@ export class ApiRequestError extends Error {
     this.status = status
     this.apiError = apiError
   }
+}
+
+// --- Scripting API types ---
+
+export interface ScriptingCompletionItem {
+  label: string
+  kind: string
+  detail: string
+  documentation?: string
+  insert_text?: string
+  insert_text_rules?: number
+}
+
+export interface CompletionsResponse {
+  items: ScriptingCompletionItem[]
+}
+
+export interface ScriptDiagnostic {
+  start_line: number
+  start_column: number
+  end_line: number
+  end_column: number
+  message: string
+  severity: number
+}
+
+export interface ValidateScriptResponse {
+  valid: boolean
+  diagnostics: ScriptDiagnostic[]
+}
+
+export interface LogEntry {
+  level: string
+  message: string
+  timestamp: string
+}
+
+export interface ExecuteScriptResponse {
+  result: MonitorResult
+  logs: LogEntry[]
 }

@@ -8,6 +8,9 @@ import {
   deleteMonitor,
   getMonitorResults,
   triggerMonitor,
+  getScriptingCompletions,
+  validateScript,
+  executeScript,
 } from '../api'
 import { ApiRequestError } from '../types'
 import type { Monitor, MonitorListResponse, MonitorApiResponse } from '../types'
@@ -191,5 +194,64 @@ describe('triggerMonitor', () => {
     const [url, options] = mockFetch.mock.calls[0]
     expect(url).toBe('/api/v1/monitors/test-mon/trigger')
     expect(options.method).toBe('POST')
+  })
+})
+
+describe('getScriptingCompletions', () => {
+  it('fetches from correct URL', async () => {
+    const data = { items: [{ label: 'http_get', kind: 'function', detail: 'sig', documentation: null, insert_text: null, insert_text_rules: null }] }
+    mockFetch.mockResolvedValue(jsonResponse(data))
+
+    const result = await getScriptingCompletions()
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0].label).toBe('http_get')
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/scripting/completions', undefined)
+  })
+})
+
+describe('validateScript', () => {
+  it('sends script in POST body', async () => {
+    const data = { valid: true, diagnostics: [] }
+    mockFetch.mockResolvedValue(jsonResponse(data))
+
+    const result = await validateScript('let x = 1;')
+    expect(result.valid).toBe(true)
+    expect(result.diagnostics).toEqual([])
+
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('/api/v1/scripting/validate')
+    expect(options.method).toBe('POST')
+    expect(JSON.parse(options.body)).toEqual({ script: 'let x = 1;' })
+  })
+})
+
+describe('executeScript', () => {
+  it('sends script and timeout', async () => {
+    const data = {
+      result: { monitor_name: 'dry-run', timestamp_started: '2024-01-01T00:00:00Z', success: true, step_results: [] },
+      logs: [],
+    }
+    mockFetch.mockResolvedValue(jsonResponse(data))
+
+    const result = await executeScript('let x = 1;', 45)
+    expect(result.result.success).toBe(true)
+
+    const [url, options] = mockFetch.mock.calls[0]
+    expect(url).toBe('/api/v1/scripting/execute')
+    expect(options.method).toBe('POST')
+    expect(JSON.parse(options.body)).toEqual({ script: 'let x = 1;', timeout_seconds: 45 })
+  })
+
+  it('uses default timeout when omitted', async () => {
+    const data = {
+      result: { monitor_name: 'dry-run', timestamp_started: '2024-01-01T00:00:00Z', success: true, step_results: [] },
+      logs: [],
+    }
+    mockFetch.mockResolvedValue(jsonResponse(data))
+
+    await executeScript('let x = 1;')
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(body).not.toHaveProperty('timeout_seconds')
   })
 })

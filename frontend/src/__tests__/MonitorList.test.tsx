@@ -149,4 +149,33 @@ describe('MonitorList', () => {
       expect(screen.getByText(/Failed to load monitors/)).toBeInTheDocument()
     })
   })
+
+  it('shows scripted monitors in list', async () => {
+    mockedApi.listMonitors.mockResolvedValue({
+      monitors: [
+        {
+          name: 'scripted-mon',
+          monitor: {
+            name: 'scripted-mon',
+            script: 'let x = 1;',
+            script_timeout_seconds: 30,
+            schedule: { initial_delay: 0, interval: 60 },
+          },
+          version: 1,
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+        },
+      ],
+    })
+    mockedApi.listMonitorSummaries.mockResolvedValue([
+      { name: 'scripted-mon', status: 'OK', last_probed: '2024-06-15T10:30:00Z' },
+    ])
+
+    renderWithProviders(<MonitorList />)
+
+    await waitFor(() => {
+      expect(screen.getByText('scripted-mon')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Scripted')).toBeInTheDocument()
+  })
 })

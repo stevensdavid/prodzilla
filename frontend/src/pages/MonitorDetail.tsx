@@ -109,7 +109,11 @@ export default function MonitorDetail() {
           <div>
             <span className="text-gray-500">Type: </span>
             <span className="text-gray-900">
-              {monitor.steps ? 'Multi-step' : 'Single-step'}
+              {monitor.script
+                ? 'Scripted'
+                : monitor.steps
+                  ? 'Multi-step'
+                  : 'Single-step'}
             </span>
           </div>
           <div>
@@ -127,6 +131,21 @@ export default function MonitorDetail() {
             </div>
           )}
         </div>
+
+        {/* Script for scripted */}
+        {monitor.script && (
+          <div>
+            <h3 className="text-sm font-medium text-gray-600 mb-1">Script</h3>
+            <pre className="text-xs text-gray-700 bg-gray-900 text-gray-100 rounded px-3 py-2 overflow-x-auto max-h-60 overflow-y-auto">
+              {monitor.script}
+            </pre>
+            {monitor.script_timeout_seconds && (
+              <div className="text-sm text-gray-500 mt-1">
+                Timeout: {monitor.script_timeout_seconds}s
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Steps for multi-step */}
         {monitor.steps && (

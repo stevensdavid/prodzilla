@@ -24,4 +24,10 @@ pub fn router() -> Router {
             get(handlers::get_monitor_results),
         )
         .route("/monitors/:name/trigger", post(handlers::trigger_monitor))
+        .route(
+            "/scripting/completions",
+            get(handlers::scripting_completions),
+        )
+        .route("/scripting/validate", post(handlers::scripting_validate))
+        .route("/scripting/execute", post(handlers::scripting_execute))
 }

@@ -204,4 +204,57 @@ describe('MonitorDetail', () => {
       expect(screen.getByText(/Failed to load monitor/)).toBeInTheDocument()
     })
   })
+
+  it('displays Scripted type for scripted monitor', async () => {
+    const scriptedData = {
+      monitor: {
+        name: 'scripted-mon',
+        monitor: {
+          name: 'scripted-mon',
+          script: 'let x = 1;\nassert(true, "ok");',
+          script_timeout_seconds: 45,
+          schedule: { initial_delay: 0, interval: 60 },
+        },
+        version: 1,
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+      },
+      version: 1,
+    }
+    mockedApi.getMonitor.mockResolvedValue(scriptedData)
+    mockedApi.getMonitorResults.mockResolvedValue([])
+
+    renderWithRoute('scripted-mon')
+
+    await waitFor(() => {
+      expect(screen.getByText('scripted-mon')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Scripted')).toBeInTheDocument()
+  })
+
+  it('displays script timeout for scripted monitor', async () => {
+    const scriptedData = {
+      monitor: {
+        name: 'scripted-mon',
+        monitor: {
+          name: 'scripted-mon',
+          script: 'let x = 1;',
+          script_timeout_seconds: 45,
+          schedule: { initial_delay: 0, interval: 60 },
+        },
+        version: 1,
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
+      },
+      version: 1,
+    }
+    mockedApi.getMonitor.mockResolvedValue(scriptedData)
+    mockedApi.getMonitorResults.mockResolvedValue([])
+
+    renderWithRoute('scripted-mon')
+
+    await waitFor(() => {
+      expect(screen.getByText(/Timeout: 45s/)).toBeInTheDocument()
+    })
+  })
 })

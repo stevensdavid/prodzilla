@@ -1,12 +1,34 @@
 import { describe, it, expect, vi } from 'vitest'
+import React from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import MonitorForm, {
   formStateToMonitor,
   monitorToFormState,
   validateForm,
   emptyFormState,
 } from '../components/MonitorForm'
+
+vi.mock('../api')
+
+vi.mock('../components/scripting/ScriptEditor', () => ({
+  default: ({ value, onChange }: { value: string; onChange: (v: string) => void }) =>
+    React.createElement('textarea', {
+      'data-testid': 'script-editor',
+      value: value ?? '',
+      onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => onChange?.(e.target.value),
+    }),
+}))
+
+vi.mock('../components/scripting/DryRunPanel', () => ({
+  default: ({ script }: { script: string }) =>
+    React.createElement(
+      'button',
+      { type: 'button', disabled: !script.trim() },
+      'Run Script'
+    ),
+}))
 
 function renderForm(props: Partial<React.ComponentProps<typeof MonitorForm>> = {}) {
   const defaultProps = {
@@ -15,7 +37,17 @@ function renderForm(props: Partial<React.ComponentProps<typeof MonitorForm>> = {
     isSubmitting: false,
     ...props,
   }
-  return { ...render(<MonitorForm {...defaultProps} />), onSubmit: defaultProps.onSubmit }
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return {
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MonitorForm {...defaultProps} />
+      </QueryClientProvider>
+    ),
+    onSubmit: defaultProps.onSubmit,
+  }
 }
 
 describe('MonitorForm', () => {
@@ -150,7 +182,7 @@ describe('validateForm', () => {
   })
 
   it('requires at least one step for multi-step', () => {
-    const state = { ...emptyFormState(), name: 'test', isMultiStep: true, steps: [] }
+    const state = { ...emptyFormState(), name: 'test', monitorType: 'multi' as const, steps: [] }
     const errors = validateForm(state)
     expect(errors.steps).toBe('At least one step is required')
   })
@@ -213,7 +245,7 @@ describe('monitorToFormState', () => {
     })
 
     expect(state.name).toBe('test')
-    expect(state.isMultiStep).toBe(false)
+    expect(state.monitorType).toBe('single')
     expect(state.url).toBe('https://example.com')
     expect(state.headers).toEqual([{ key: 'x-api-key', value: 'abc' }])
     expect(state.body).toBe('{}')
@@ -232,9 +264,176 @@ describe('monitorToFormState', () => {
       schedule: { initial_delay: 0, interval: 60 },
     })
 
-    expect(state.isMultiStep).toBe(true)
+    expect(state.monitorType).toBe('multi')
     expect(state.steps).toHaveLength(2)
     expect(state.steps[0].name).toBe('step-1')
     expect(state.steps[1].name).toBe('step-2')
+  })
+
+  it('converts scripted monitor to form state', () => {
+    const state = monitorToFormState({
+      name: 'scripted-test',
+      script: 'let x = 1;',
+      script_timeout_seconds: 45,
+      schedule: { initial_delay: 0, interval: 120 },
+    })
+
+    expect(state.monitorType).toBe('scripted')
+    expect(state.script).toBe('let x = 1;')
+    expect(state.scriptTimeoutSeconds).toBe('45')
+  })
+
+  it('defaults scriptTimeoutSeconds when not provided', () => {
+    const state = monitorToFormState({
+      name: 'scripted-test',
+      script: 'let x = 1;',
+      schedule: { initial_delay: 0, interval: 60 },
+    })
+
+    expect(state.scriptTimeoutSeconds).toBe('30')
+  })
+})
+
+describe('formStateToMonitor (scripted)', () => {
+  it('converts scripted form to monitor', () => {
+    const state = {
+      ...emptyFormState(),
+      name: 'scripted-test',
+      monitorType: 'scripted' as const,
+      script: 'let x = 1;',
+      scriptTimeoutSeconds: '45',
+    }
+
+    const monitor = formStateToMonitor(state)
+    expect(monitor.name).toBe('scripted-test')
+    expect(monitor.script).toBe('let x = 1;')
+    expect(monitor.script_timeout_seconds).toBe(45)
+  })
+
+  it('scripted form omits single-step fields', () => {
+    const state = {
+      ...emptyFormState(),
+      name: 'scripted-test',
+      monitorType: 'scripted' as const,
+      script: 'let x = 1;',
+      scriptTimeoutSeconds: '30',
+    }
+
+    const monitor = formStateToMonitor(state)
+    expect(monitor.url).toBeUndefined()
+    expect(monitor.http_method).toBeUndefined()
+    expect(monitor.steps).toBeUndefined()
+  })
+})
+
+describe('validateForm (scripted)', () => {
+  it('rejects empty script', () => {
+    const state = {
+      ...emptyFormState(),
+      name: 'test',
+      monitorType: 'scripted' as const,
+      script: '',
+    }
+    const errors = validateForm(state)
+    expect(errors.script).toBe('Script is required')
+  })
+
+  it('accepts non-empty script', () => {
+    const state = {
+      ...emptyFormState(),
+      name: 'test',
+      monitorType: 'scripted' as const,
+      script: 'let x = 1;',
+    }
+    const errors = validateForm(state)
+    expect(errors.script).toBeUndefined()
+  })
+
+  it('does not require url for scripted', () => {
+    const state = {
+      ...emptyFormState(),
+      name: 'test',
+      monitorType: 'scripted' as const,
+      script: 'let x = 1;',
+      url: '',
+    }
+    const errors = validateForm(state)
+    expect(errors.url).toBeUndefined()
+  })
+})
+
+describe('MonitorForm (scripted UI)', () => {
+  it('renders three monitor type radio buttons', () => {
+    renderForm()
+    expect(screen.getByLabelText('Single-step')).toBeInTheDocument()
+    expect(screen.getByLabelText('Multi-step')).toBeInTheDocument()
+    expect(screen.getByLabelText('Scripted')).toBeInTheDocument()
+  })
+
+  it('selecting Scripted shows editor', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.click(screen.getByLabelText('Scripted'))
+    expect(await screen.findByTestId('script-editor')).toBeInTheDocument()
+  })
+
+  it('selecting Scripted hides URL field', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.click(screen.getByLabelText('Scripted'))
+    expect(screen.queryByPlaceholderText('https://...')).not.toBeInTheDocument()
+  })
+
+  it('selecting Scripted hides step fields', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.click(screen.getByLabelText('Scripted'))
+    expect(screen.queryByText('Steps')).not.toBeInTheDocument()
+  })
+
+  it('switching from Scripted to Single-step shows URL', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.click(screen.getByLabelText('Scripted'))
+    expect(screen.queryByPlaceholderText('https://...')).not.toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('Single-step'))
+    expect(screen.getByPlaceholderText('https://...')).toBeInTheDocument()
+  })
+
+  it('scripted form validation shows error for empty script', async () => {
+    const user = userEvent.setup()
+    const { onSubmit } = renderForm()
+
+    await user.type(screen.getByPlaceholderText('my-monitor'), 'test')
+    await user.click(screen.getByLabelText('Scripted'))
+    await user.click(screen.getByText('Save'))
+
+    expect(screen.getByText('Script is required')).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('initialState with scripted monitor pre-fills editor', () => {
+    const initial = {
+      ...emptyFormState(),
+      name: 'existing-script',
+      monitorType: 'scripted' as const,
+      script: 'let code = 42;',
+    }
+    renderForm({ initialState: initial })
+
+    expect(screen.getByTestId('script-editor')).toHaveValue('let code = 42;')
+  })
+
+  it('Run Script button appears in scripted mode', async () => {
+    const user = userEvent.setup()
+    renderForm()
+
+    await user.click(screen.getByLabelText('Scripted'))
+    expect(screen.getByText('Run Script')).toBeInTheDocument()
   })
 })

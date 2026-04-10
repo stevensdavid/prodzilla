@@ -57,7 +57,7 @@ pub struct MonitorSummary {
 
 // --- Error type ---
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiError {
     pub error: String,
     pub message: String,
@@ -120,6 +120,59 @@ impl From<ConfigStoreError> for ApiError {
             }
         }
     }
+}
+
+// --- Scripting types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptingCompletionItem {
+    pub label: String,
+    pub kind: String,
+    pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_text_rules: Option<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompletionsResponse {
+    pub items: Vec<ScriptingCompletionItem>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ValidateScriptRequest {
+    pub script: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ValidateScriptResponse {
+    pub valid: bool,
+    pub diagnostics: Vec<DiagnosticDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DiagnosticDto {
+    pub start_line: usize,
+    pub start_column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+    pub message: String,
+    pub severity: u8,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExecuteScriptRequest {
+    pub script: String,
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecuteScriptResponse {
+    pub result: crate::monitor::model::MonitorResult,
+    pub logs: Vec<crate::scripting::types::LogEntry>,
 }
 
 // --- Custom JSON extractor for consistent 400 errors ---

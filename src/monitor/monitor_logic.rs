@@ -64,6 +64,7 @@ impl Monitorable for Monitor {
             let ctx = ScriptContext {
                 http_client: get_client().clone(),
                 step_results: Mutex::new(Vec::new()),
+                log_entries: Mutex::new(Vec::new()),
                 monitor_name: self.name.clone(),
                 timeout: Duration::from_secs(self.script_timeout_seconds.unwrap_or(60)),
             };
@@ -99,7 +100,8 @@ impl Monitorable for Monitor {
                     return;
                 }
             };
-            let monitor_result = runner.execute(ctx).await;
+            let output = runner.execute(ctx).await;
+            let monitor_result = output.result;
 
             let success = monitor_result.success;
             app_state.metrics.duration.record(
