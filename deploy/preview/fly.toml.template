@@ -1,0 +1,23 @@
+# Fly.io app config rendered per PR by .github/workflows/pr-preview.yml.
+# The workflow substitutes ${FLY_APP} and ${FLY_REGION} via envsubst, then
+# passes the rendered file to `flyctl deploy --config`.
+#
+# No [[services]] block: the machine has no public listener. Inbound
+# traffic only reaches it via tailscaled inside the container, over the
+# user's tailnet. Because there is no fly-proxy ingress, auto-stop /
+# auto-start does not apply — the single machine runs continuously while
+# the PR is open and is destroyed by the destroy job on PR close. A
+# 256 MB shared-cpu-1x machine costs ~$2/mo while running.
+
+app = "${FLY_APP}"
+primary_region = "${FLY_REGION}"
+
+[build]
+  dockerfile = "deploy/preview/Dockerfile"
+
+[experimental]
+  auto_rollback = true
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

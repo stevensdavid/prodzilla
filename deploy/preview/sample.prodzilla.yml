@@ -1,0 +1,39 @@
+# Fallback config used by preview environments when the PR branch does not
+# contain a prodzilla.yml at the repo root. Probes target public services
+# so that previews work without any outbound allowlisting.
+probes:
+  - name: ipify-health
+    url: https://api.ipify.org/?format=json
+    http_method: GET
+    expectations:
+      - field: StatusCode
+        operation: Equals
+        value: "200"
+    schedule:
+      initial_delay: 0
+      interval: 60
+    tags:
+      env: preview
+
+stories:
+  - name: ip-geo-lookup
+    steps:
+      - name: get-ip
+        url: https://api.ipify.org/?format=json
+        http_method: GET
+        expectations:
+          - field: StatusCode
+            operation: Equals
+            value: "200"
+      - name: get-location
+        url: https://ipinfo.io/${{ steps.get-ip.body.ip }}/geo
+        http_method: GET
+        expectations:
+          - field: StatusCode
+            operation: Equals
+            value: "200"
+    schedule:
+      initial_delay: 0
+      interval: 120
+    tags:
+      env: preview
