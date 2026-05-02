@@ -33,7 +33,7 @@ use super::model::ScheduleParameters;
 use crate::AppState;
 
 pub trait Monitorable {
-    async fn probe_and_store_result(&self, app_state: Arc<AppState>);
+    async fn probe_and_store_result(&self, app_state: Arc<AppState>) -> MonitorResult;
     fn get_name(&self) -> String;
     fn get_schedule(&self) -> &ScheduleParameters;
 }
@@ -45,7 +45,7 @@ fn time_since(timestamp: &chrono::DateTime<Utc>) -> u64 {
 }
 
 impl Monitorable for Monitor {
-    async fn probe_and_store_result(&self, app_state: Arc<AppState>) {
+    async fn probe_and_store_result(&self, app_state: Arc<AppState>) -> MonitorResult {
         let monitor_attributes = [
             KeyValue::new("name", self.name.clone()),
             KeyValue::new("type", "monitor"),
@@ -64,6 +64,7 @@ impl Monitorable for Monitor {
             let ctx = ScriptContext {
                 http_client: get_client().clone(),
                 step_results: Mutex::new(Vec::new()),
+                log_entries: Mutex::new(Vec::new()),
                 monitor_name: self.name.clone(),
                 timeout: Duration::from_secs(self.script_timeout_seconds.unwrap_or(60)),
             };
@@ -95,11 +96,12 @@ impl Monitorable for Monitor {
                         "Script compilation failed for monitor {}: {}",
                         &self.name, e
                     );
-                    app_state.add_monitor_result(self.name.clone(), monitor_result);
-                    return;
+                    app_state.add_monitor_result(self.name.clone(), monitor_result.clone());
+                    return monitor_result;
                 }
             };
-            let monitor_result = runner.execute(ctx).await;
+            let output = runner.execute(ctx).await;
+            let monitor_result = output.result;
 
             let success = monitor_result.success;
             app_state.metrics.duration.record(
@@ -135,8 +137,8 @@ impl Monitorable for Monitor {
                 "Finished scripted monitor {}, success: {}",
                 &self.name, success
             );
-            app_state.add_monitor_result(self.name.clone(), monitor_result);
-            return;
+            app_state.add_monitor_result(self.name.clone(), monitor_result.clone());
+            return monitor_result;
         }
 
         let mut execution_context = ExecutionContext::new();
@@ -319,7 +321,8 @@ impl Monitorable for Monitor {
             step_results,
         };
 
-        app_state.add_monitor_result(self.name.clone(), monitor_result);
+        app_state.add_monitor_result(self.name.clone(), monitor_result.clone());
+        monitor_result
     }
 
     fn get_name(&self) -> String {
@@ -621,5 +624,39 @@ mod monitor_logic_tests {
                 .contains("compilation failed"),
             "Error should mention compilation failure"
         );
+    }
+
+    #[tokio::test]
+    async fn test_probe_and_store_result_returns_monitor_result() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let monitor = Monitor {
+            name: "return-test".to_string(),
+            url: Some(mock_server.uri()),
+            http_method: Some("GET".to_string()),
+            with: None,
+            expectations: None,
+            sensitive: false,
+            steps: None,
+            schedule: ScheduleParameters {
+                initial_delay: 0,
+                interval: 60,
+            },
+            alerts: None,
+            tags: None,
+            script: None,
+            script_path: None,
+            script_timeout_seconds: None,
+        };
+
+        let app_state = Arc::new(AppState::new(Config { monitors: vec![] }));
+        let result = monitor.probe_and_store_result(app_state).await;
+        assert_eq!(result.monitor_name, "return-test");
+        assert!(result.success);
     }
 }

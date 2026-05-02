@@ -13,3 +13,7 @@ target/
 
 # "projects should contain only what is needed to function"
 .vscode/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

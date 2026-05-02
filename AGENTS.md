@@ -36,7 +36,7 @@ Single binary, async Rust application using Axum (web) and Tokio (runtime).
   - `http.rs` — HTTP calls via lazy-static reqwest::Client, OTel trace context propagation
   - `expectations.rs` — Response validation (Equals, NotEquals, Contains, Matches regex, IsOneOf with `|` separator)
   - `variables.rs` — `${{ steps.name.response.body.field }}`, `${{ generate.uuid }}`, `${{ env.VAR }}` substitution via regex
-- `src/web_server/` — Axum routes: `GET /monitors`, `GET /monitors/{name}/results`, `GET /monitors/{name}/trigger`, `GET /metrics`
+- `src/web_server/` — API routes under `/api/v1`: `GET/POST /monitors`, `GET /monitors/summary`, `GET/PUT/DELETE /monitors/:name`, `GET /monitors/:name/results`, `POST /monitors/:name/trigger`. Prometheus `/metrics` on separate port (default 9464). SPA fallback serves frontend for all other routes.
 - `src/alerts/outbound_webhook.rs` — Webhook alerting with auto-detected Slack formatting, body truncation to 500 chars
 - `src/otel/` — OpenTelemetry setup: metrics (OTLP/stdout/Prometheus) and tracing (OTLP/stdout)
 - `src/scripting/` — Rhai-based scripting engine for scripted monitors:
@@ -54,7 +54,7 @@ Single binary, async Rust application using Axum (web) and Tokio (runtime).
 - Unit tests are co-located in modules (`#[cfg(test)]` blocks)
 - `wiremock` for HTTP server mocking in tests
 - `test_utils.rs` provides builder helpers: `get_simple_monitor()`, `get_default_schedule()`, etc.
-- Integration tests in `src/web_server/tests.rs`
+- Integration tests co-located in `src/web_server/api_v1/handlers.rs` (`#[cfg(test)]` module)
 
 ## Configuration
 
