@@ -6,20 +6,39 @@ ARG RUST_VERSION=1.85
 FROM node:20-slim AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Build Rust binary
-FROM rust:${RUST_VERSION}-slim-bookworm AS build
-
+# Rust build base with cargo-chef preinstalled
+FROM lukemathwalker/cargo-chef:latest-rust-${RUST_VERSION} AS chef
 WORKDIR /app
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends libssl-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update -y && apt-get install -y libssl-dev pkg-config
+# Generate the dependency recipe. Only Cargo.toml/Cargo.lock content
+# (via recipe.json) determines the cook cache key downstream.
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Cook deps, then build the binary. Cache mounts persist cargo's
+# registry/git and the target dir across runs even when layer cache misses.
+FROM chef AS build
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
-RUN cargo build --locked --release --target-dir target && cp ./target/release/prodzilla /bin/prodzilla
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo build --locked --release \
+    && cp ./target/release/prodzilla /bin/prodzilla
 
 FROM debian:bookworm-slim AS final
 
