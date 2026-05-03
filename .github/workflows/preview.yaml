@@ -156,7 +156,7 @@ jobs:
           AUTHKEY=$(curl -fsSL -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["tag:prodzilla-preview"]}}},"expirySeconds":3600}' \
+            -d '{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":true,"preauthorized":true,"tags":["tag:prodzilla-preview"]}}},"expirySeconds":3600}' \
             https://api.tailscale.com/api/v2/tailnet/-/keys | jq -r .key)
           echo "::add-mask::$AUTHKEY"
 
