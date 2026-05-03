@@ -5,7 +5,7 @@ SOCK=/tmp/tailscaled.sock
 
 tailscaled \
     --tun=userspace-networking \
-    --state=mem: \
+    --state=/tmp/tailscale-state \
     --socket="$SOCK" &
 
 i=0
