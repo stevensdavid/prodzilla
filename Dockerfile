@@ -23,21 +23,20 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# Cook deps, then build the binary. Cache mounts persist cargo's
-# registry/git and the target dir across runs even when layer cache misses.
+# Cook deps, then build the binary. Keep target/ in the layer (so the cooked
+# deps live in a cacheable Docker layer) and use BuildKit cache mounts only
+# for cargo's registry/git, which speeds up cold-cache fetches.
 FROM chef AS build
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --locked --release \
+    cargo build --locked --release --bin prodzilla \
     && cp ./target/release/prodzilla /bin/prodzilla
 
 FROM debian:bookworm-slim AS final
