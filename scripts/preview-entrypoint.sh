@@ -18,8 +18,6 @@ until [ -S "$SOCK" ]; do
     sleep 0.2
 done
 
-echo "TS_AUTHKEY len=${#TS_AUTHKEY} prefix=$(printf '%.15s' "$TS_AUTHKEY")" >&2
-
 tailscale --socket="$SOCK" up \
     --auth-key="$TS_AUTHKEY" \
     --hostname="$FLY_APP_NAME" \
