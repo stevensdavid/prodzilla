@@ -1,0 +1,40 @@
+name: Preview Image Check
+
+on:
+  pull_request:
+    paths:
+      - 'preview.Dockerfile'
+      - 'scripts/preview-entrypoint.sh'
+      - 'fly.preview.toml'
+      - 'Dockerfile'
+      - '.github/workflows/preview-image-check.yaml'
+
+jobs:
+  build-check:
+    name: Build preview image (no deploy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build prod image locally as :pr-check
+        run: |
+          docker build \
+            -f Dockerfile \
+            -t ghcr.io/stevensdavid/prodzilla:pr-check \
+            .
+
+      - name: Build preview image FROM :pr-check
+        run: |
+          docker build \
+            -f preview.Dockerfile \
+            --build-arg PR_NUMBER=check \
+            -t prodzilla-preview:check \
+            .
+
+      - name: Verify entrypoint is executable
+        run: |
+          docker run --rm --entrypoint /bin/sh prodzilla-preview:check \
+            -c 'test -x /usr/local/bin/preview-entrypoint.sh \
+                && command -v tailscaled >/dev/null \
+                && command -v tailscale >/dev/null \
+                && test -x /bin/prodzilla'
