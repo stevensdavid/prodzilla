@@ -1,0 +1,462 @@
+name: Preview
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+  workflow_run:
+    workflows: ["PR Image"]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+  pull-requests: write
+  deployments: write
+  actions: read
+
+concurrency:
+  group: preview-pr-${{ github.event.issue.number || github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve dispatch
+    runs-on: ubuntu-latest
+    # Coarse event-shape filter; fine-grained checks (label presence,
+    # workflow_run conclusion) live in the script and may set action=''.
+    if: |
+      (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request != null
+        && github.event.comment.user.login == github.event.repository.owner.login
+        && (startsWith(github.event.comment.body, '/preview') || startsWith(github.event.comment.body, '/teardown')))
+      || (github.event_name == 'pull_request'
+        && github.event.action == 'closed'
+        && contains(github.event.pull_request.labels.*.name, 'preview'))
+      || (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'pull_request')
+    outputs:
+      action: ${{ steps.compute.outputs.action }}
+      pr_number: ${{ steps.compute.outputs.pr_number }}
+      head_sha: ${{ steps.compute.outputs.head_sha }}
+      app_name: ${{ steps.compute.outputs.app_name }}
+    steps:
+      - id: compute
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const event = context.eventName;
+            let action = '', prNumber, headSha;
+
+            if (event === 'issue_comment') {
+              const body = context.payload.comment.body.trim();
+              if (body.startsWith('/preview')) action = 'preview';
+              else if (body.startsWith('/teardown')) action = 'teardown';
+              prNumber = context.payload.issue.number;
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              headSha = pr.data.head.sha;
+            } else if (event === 'pull_request') {
+              // Only `closed` reaches this branch (filtered by `if:` above).
+              prNumber = context.payload.pull_request.number;
+              headSha = context.payload.pull_request.head.sha;
+              action = 'teardown';
+            } else if (event === 'workflow_run') {
+              // pr-image.yaml succeeded — auto-redeploy if the PR is labeled.
+              const wr = context.payload.workflow_run;
+              headSha = wr.head_sha;
+              const prs = wr.pull_requests || [];
+              if (prs.length === 0) {
+                core.info('workflow_run had no associated PRs; skipping');
+              } else {
+                prNumber = prs[0].number;
+                const pr = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                });
+                const hasLabel = pr.data.labels.some(l => l.name === 'preview');
+                const ownerOpened = pr.data.user.login === context.repo.owner;
+                if (hasLabel && ownerOpened) {
+                  action = 'preview';
+                } else {
+                  core.info(`PR #${prNumber} not eligible (label=${hasLabel}, owner=${ownerOpened})`);
+                }
+              }
+            }
+
+            const appName = prNumber ? `stevensdavid-prodzilla-pr-${prNumber}` : '';
+            core.setOutput('action', action);
+            core.setOutput('pr_number', prNumber || '');
+            core.setOutput('head_sha', headSha || '');
+            core.setOutput('app_name', appName);
+
+  preview:
+    name: Deploy preview
+    needs: resolve
+    if: needs.resolve.outputs.action == 'preview'
+    runs-on: ubuntu-latest
+    environment: pr-preview
+    env:
+      APP_NAME: ${{ needs.resolve.outputs.app_name }}
+      PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.head_sha }}
+
+      - name: Apply preview label
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parseInt(process.env.PR_NUMBER, 10),
+              labels: ['preview'],
+            });
+
+      - name: Wait for prod PR image to be available on GHCR
+        run: |
+          set -euo pipefail
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:sha-${HEAD_SHA}"
+          for i in $(seq 1 60); do
+            if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+              echo "Image $IMAGE is ready"
+              exit 0
+            fi
+            echo "Waiting for $IMAGE (attempt $i/60)..."
+            sleep 10
+          done
+          echo "Image $IMAGE was not pushed within 10 minutes" >&2
+          exit 1
+
+      - name: Mint Tailscale OAuth token and auth key
+        id: ts
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -fsSL \
+            -u "${TS_OAUTH_CLIENT_ID}:${TS_OAUTH_CLIENT_SECRET}" \
+            -d "grant_type=client_credentials" \
+            https://api.tailscale.com/api/v2/oauth/token | jq -r .access_token)
+          echo "::add-mask::$TOKEN"
+
+          AUTHKEY=$(curl -fsSL -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["tag:prodzilla-preview"]}}},"expirySeconds":3600}' \
+            https://api.tailscale.com/api/v2/tailnet/-/keys | jq -r .key)
+          echo "::add-mask::$AUTHKEY"
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "authkey=$AUTHKEY" >> "$GITHUB_OUTPUT"
+
+      - name: Delete stale Tailscale node by hostname
+        env:
+          TS_TOKEN: ${{ steps.ts.outputs.token }}
+        run: |
+          set -euo pipefail
+          DEVICES=$(curl -fsSL -H "Authorization: Bearer $TS_TOKEN" \
+            https://api.tailscale.com/api/v2/tailnet/-/devices)
+          ID=$(echo "$DEVICES" | jq -r --arg n "$APP_NAME" \
+            '.devices[] | select(.hostname == $n) | .id' | head -n1)
+          if [ -n "$ID" ]; then
+            echo "Deleting stale Tailscale node $ID ($APP_NAME)"
+            STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TS_TOKEN" \
+              "https://api.tailscale.com/api/v2/device/$ID")
+            case "$STATUS" in
+              200|204|404) ;;
+              *) echo "Failed to delete node $ID (status $STATUS)" >&2; exit 1 ;;
+            esac
+          else
+            echo "No stale node for hostname $APP_NAME"
+          fi
+
+      - name: Resolve tailnet DNS suffix
+        id: tailnet
+        env:
+          TS_TOKEN: ${{ steps.ts.outputs.token }}
+        run: |
+          set -euo pipefail
+          SUFFIX=$(curl -fsSL -H "Authorization: Bearer $TS_TOKEN" \
+            https://api.tailscale.com/api/v2/tailnet/-/devices | \
+            jq -r '.devices[0].name' | sed -E 's/^[^.]+\.//')
+          if [ -z "$SUFFIX" ] || [ "$SUFFIX" = "null" ]; then
+            echo "Could not resolve tailnet DNS suffix" >&2
+            exit 1
+          fi
+          echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master @ 2026-05-03
+
+      - name: Create Fly app if missing
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! flyctl apps list --json | jq -e --arg n "$APP_NAME" \
+              '.[] | select(.Name == $n)' >/dev/null; then
+            flyctl apps create --name "$APP_NAME" --org personal
+          else
+            echo "Fly app $APP_NAME already exists"
+          fi
+
+      - name: Stage TS_AUTHKEY on Fly app
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          TS_AUTHKEY: ${{ steps.ts.outputs.authkey }}
+        run: flyctl secrets set TS_AUTHKEY="$TS_AUTHKEY" --app "$APP_NAME" --stage
+
+      - name: Create GitHub Deployment (in_progress)
+        id: deployment
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const dep = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: process.env.HEAD_SHA,
+              environment: `preview-pr-${process.env.PR_NUMBER}`,
+              auto_merge: false,
+              required_contexts: [],
+              transient_environment: true,
+              production_environment: false,
+              description: `Preview for PR #${process.env.PR_NUMBER}`,
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: dep.data.id,
+              state: 'in_progress',
+            });
+            core.setOutput('id', dep.data.id);
+
+      - name: Deploy to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy \
+            --app "$APP_NAME" \
+            --config fly.preview.toml \
+            --build-arg PR_NUMBER="$PR_NUMBER" \
+            --image-label "sha-$HEAD_SHA" \
+            --remote-only \
+            --strategy immediate \
+            --ha=false
+
+      - name: Find existing sticky comment
+        id: find_comment
+        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3
+        with:
+          issue-number: ${{ env.PR_NUMBER }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- preview-bot -->'
+
+      - name: Mark Deployment success
+        if: success()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.deployment.outputs.id }},
+              state: 'success',
+              environment_url: `https://${process.env.APP_NAME}.${process.env.TAILNET_SUFFIX}`,
+              log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+        env:
+          TAILNET_SUFFIX: ${{ steps.tailnet.outputs.suffix }}
+
+      - name: Upsert sticky comment (success)
+        if: success()
+        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4
+        with:
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ env.PR_NUMBER }}
+          edit-mode: replace
+          body: |
+            <!-- preview-bot -->
+            🚀 **Preview deployed**
+
+            URL: https://${{ env.APP_NAME }}.${{ steps.tailnet.outputs.suffix }}
+            Commit: `${{ env.HEAD_SHA }}`
+
+            Connect Tailscale on your phone, then open the URL.
+            Use `/teardown` or close the PR to dispose of this environment.
+
+      - name: Mark Deployment failure
+        if: failure()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.deployment.outputs.id || 0 }},
+              state: 'failure',
+              log_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+      - name: Upsert sticky comment (failure)
+        if: failure()
+        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4
+        with:
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ env.PR_NUMBER }}
+          edit-mode: replace
+          body: |
+            <!-- preview-bot -->
+            ❌ **Preview deploy failed**
+
+            Commit: `${{ env.HEAD_SHA }}`
+            See run logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  teardown:
+    name: Teardown preview
+    needs: resolve
+    if: needs.resolve.outputs.action == 'teardown'
+    runs-on: ubuntu-latest
+    environment: pr-preview
+    env:
+      APP_NAME: ${{ needs.resolve.outputs.app_name }}
+      PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master @ 2026-05-03
+
+      - name: Mint Tailscale OAuth token
+        id: ts
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -fsSL \
+            -u "${TS_OAUTH_CLIENT_ID}:${TS_OAUTH_CLIENT_SECRET}" \
+            -d "grant_type=client_credentials" \
+            https://api.tailscale.com/api/v2/oauth/token | jq -r .access_token)
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Delete Tailscale node
+        env:
+          TS_TOKEN: ${{ steps.ts.outputs.token }}
+        run: |
+          set -euo pipefail
+          DEVICES=$(curl -fsSL -H "Authorization: Bearer $TS_TOKEN" \
+            https://api.tailscale.com/api/v2/tailnet/-/devices)
+          ID=$(echo "$DEVICES" | jq -r --arg n "$APP_NAME" \
+            '.devices[] | select(.hostname == $n) | .id' | head -n1)
+          if [ -n "$ID" ]; then
+            curl -sS -o /dev/null -X DELETE \
+              -H "Authorization: Bearer $TS_TOKEN" \
+              "https://api.tailscale.com/api/v2/device/$ID" || true
+          fi
+
+      - name: Destroy Fly app
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl apps destroy "$APP_NAME" --yes 2>/dev/null || true
+
+      - name: Delete GHCR tags for this PR
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const pkg = context.repo.repo;
+            const prTag = `pr-${process.env.PR_NUMBER}`;
+
+            const versions = await github.paginate(
+              github.rest.packages.getAllPackageVersionsForPackageOwnedByUser,
+              {
+                package_type: 'container',
+                package_name: pkg,
+                username: owner,
+                per_page: 100,
+              },
+            );
+
+            for (const v of versions) {
+              const tags = (v.metadata?.container?.tags) || [];
+              if (tags.includes(prTag)) {
+                console.log(`Deleting version ${v.id} (tags: ${tags.join(', ')})`);
+                await github.rest.packages.deletePackageVersionForUser({
+                  package_type: 'container',
+                  package_name: pkg,
+                  username: owner,
+                  package_version_id: v.id,
+                });
+              }
+            }
+
+      - name: Remove preview label
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(process.env.PR_NUMBER, 10),
+                name: 'preview',
+              });
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+
+      - name: Mark Deployments inactive
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const env = `preview-pr-${process.env.PR_NUMBER}`;
+            const deps = await github.paginate(github.rest.repos.listDeployments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment: env,
+              per_page: 100,
+            });
+            for (const d of deps) {
+              await github.rest.repos.createDeploymentStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                deployment_id: d.id,
+                state: 'inactive',
+              });
+            }
+
+      - name: Find existing sticky comment
+        if: always()
+        id: find_comment
+        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3
+        with:
+          issue-number: ${{ env.PR_NUMBER }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- preview-bot -->'
+
+      - name: Update sticky comment
+        if: always()
+        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4
+        with:
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ env.PR_NUMBER }}
+          edit-mode: replace
+          body: |
+            <!-- preview-bot -->
+            🧹 **Preview torn down**
+
+            The Fly app for this PR has been destroyed.

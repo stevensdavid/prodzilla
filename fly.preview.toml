@@ -1,0 +1,17 @@
+# Per-PR preview environment template.
+# `app` is set per-PR by the preview workflow via `flyctl deploy --app ...`.
+# No [[services]] block: no public IP, no Fly proxy ingress.
+# All access is via the Tailscale sidecar inside the machine.
+
+primary_region = "arn"
+
+[build]
+  dockerfile = "preview.Dockerfile"
+
+[env]
+  RUST_LOG = "info"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

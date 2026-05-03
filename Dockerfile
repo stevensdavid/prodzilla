@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG RUST_VERSION=1.78
+ARG RUST_VERSION=1.85
 
 # Build frontend
 FROM node:20-slim AS frontend-build
