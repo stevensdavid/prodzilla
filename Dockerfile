@@ -25,8 +25,11 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # Cook deps, then build the binary. Keep target/ in the layer (so the cooked
 # deps live in a cacheable Docker layer) and use BuildKit cache mounts only
-# for cargo's registry/git, which speeds up cold-cache fetches.
+# for cargo's registry/git, which speeds up cold-cache fetches. Pin the
+# target dir explicitly because the cargo-chef base image overrides
+# CARGO_TARGET_DIR to a project-name-derived path under /tmp.
 FROM chef AS build
+ENV CARGO_TARGET_DIR=/app/target
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
