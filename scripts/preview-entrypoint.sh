@@ -9,10 +9,10 @@ tailscaled \
     --socket="$SOCK" &
 
 i=0
-until tailscale --socket="$SOCK" status >/dev/null 2>&1; do
+until [ -S "$SOCK" ]; do
     i=$((i + 1))
     if [ $i -gt 50 ]; then
-        echo "tailscaled did not become ready within 10s" >&2
+        echo "tailscaled socket did not appear within 10s" >&2
         exit 1
     fi
     sleep 0.2
